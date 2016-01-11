@@ -29,6 +29,13 @@ func Provider() terraform.ResourceProvider {
 				Description: descriptions["secret_key"],
 			},
 
+			"profile": &schema.Schema{
+				Type:        schema.TypeString,
+				Optional:    true,
+				Default:     "",
+				Description: descriptions["profile"],
+			},
+
 			"token": &schema.Schema{
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -217,6 +224,9 @@ func init() {
 		"secret_key": "The secret key for API operations. You can retrieve this\n" +
 			"from the 'Security & Credentials' section of the AWS console.",
 
+		"profile": "The profile for API operations. If not set, the default profile\n" +
+			"created with `aws configure` will be used.",
+
 		"token": "session token. A session token is only required if you are\n" +
 			"using temporary security credentials.",
 
@@ -236,6 +246,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	config := Config{
 		AccessKey:        d.Get("access_key").(string),
 		SecretKey:        d.Get("secret_key").(string),
+		Profile:          d.Get("profile").(string),
 		Token:            d.Get("token").(string),
 		Region:           d.Get("region").(string),
 		MaxRetries:       d.Get("max_retries").(int),

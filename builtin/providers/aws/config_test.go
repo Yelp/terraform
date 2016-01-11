@@ -16,7 +16,7 @@ func TestAWSConfig_shouldError(t *testing.T) {
 	defer resetEnv()
 	cfg := Config{}
 
-	c := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token)
+	c := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token, "")
 	_, err := c.Get()
 	if awsErr, ok := err.(awserr.Error); ok {
 		if awsErr.Code() != "NoCredentialProviders" {
@@ -49,7 +49,7 @@ func TestAWSConfig_shouldBeStatic(t *testing.T) {
 			Token:     c.Token,
 		}
 
-		creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token)
+		creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token, "")
 		if creds == nil {
 			t.Fatalf("Expected a static creds provider to be returned")
 		}
@@ -84,7 +84,7 @@ func TestAWSConfig_shouldIAM(t *testing.T) {
 	// An empty config, no key supplied
 	cfg := Config{}
 
-	creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token)
+	creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token, "")
 	if creds == nil {
 		t.Fatalf("Expected a static creds provider to be returned")
 	}
@@ -131,9 +131,10 @@ func TestAWSConfig_shouldIgnoreIAM(t *testing.T) {
 			AccessKey: c.Key,
 			SecretKey: c.Secret,
 			Token:     c.Token,
+			Profile:   "",
 		}
 
-		creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token)
+		creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token, cfg.Profile)
 		if creds == nil {
 			t.Fatalf("Expected a static creds provider to be returned")
 		}
@@ -161,7 +162,7 @@ func TestAWSConfig_shouldBeENV(t *testing.T) {
 	defer resetEnv()
 
 	cfg := Config{}
-	creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token)
+	creds := getCreds(cfg.AccessKey, cfg.SecretKey, cfg.Token, "")
 	if creds == nil {
 		t.Fatalf("Expected a static creds provider to be returned")
 	}

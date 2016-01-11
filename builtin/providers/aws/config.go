@@ -49,6 +49,7 @@ import (
 type Config struct {
 	AccessKey  string
 	SecretKey  string
+	Profile    string
 	Token      string
 	Region     string
 	MaxRetries int
@@ -111,7 +112,7 @@ func (c *Config) Client() (interface{}, error) {
 		client.region = c.Region
 
 		log.Println("[INFO] Building AWS auth structure")
-		creds := getCreds(c.AccessKey, c.SecretKey, c.Token)
+		creds := getCreds(c.AccessKey, c.SecretKey, c.Token, c.Profile)
 		// Call Get to check for credential provider. If nothing found, we'll get an
 		// error, and we can present it nicely to the user
 		_, err = creds.Get()
@@ -335,7 +336,7 @@ func (c *Config) ValidateAccountId(iamconn *iam.IAM) error {
 // This function is responsible for reading credentials from the
 // environment in the case that they're not explicitly specified
 // in the Terraform configuration.
-func getCreds(key, secret, token string) *awsCredentials.Credentials {
+func getCreds(key, secret, token, profile string) *awsCredentials.Credentials {
 	// build a chain provider, lazy-evaulated by aws-sdk
 	providers := []awsCredentials.Provider{
 		&awsCredentials.StaticProvider{Value: awsCredentials.Value{
@@ -344,7 +345,9 @@ func getCreds(key, secret, token string) *awsCredentials.Credentials {
 			SessionToken:    token,
 		}},
 		&awsCredentials.EnvProvider{},
-		&awsCredentials.SharedCredentialsProvider{},
+		&awsCredentials.SharedCredentialsProvider{
+			Profile: profile,
+		},
 	}
 
 	// We only look in the EC2 metadata API if we can connect

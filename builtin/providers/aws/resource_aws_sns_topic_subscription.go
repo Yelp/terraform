@@ -11,6 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/sns"
 )
 
+const awsSNSPendingConfirmationMessage = "pending confirmation"
+
 func resourceAwsSnsTopicSubscription() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceAwsSnsTopicSubscriptionCreate,
@@ -75,8 +77,8 @@ func resourceAwsSnsTopicSubscriptionCreate(d *schema.ResourceData, meta interfac
 		return err
 	}
 
-	if output.SubscriptionArn != nil && *output.SubscriptionArn == "pending configuration" {
-		log.Printf("[WARN] Invalid SNS Subscription, received a \"pending confirmation\" ARN")
+	if output.SubscriptionArn != nil && *output.SubscriptionArn == pendingConfirmationMessage {
+		log.Printf("[WARN] Invalid SNS Subscription, received a \"%s\" ARN", pendingConfirmationMessage)
 		return nil
 	}
 

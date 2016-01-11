@@ -107,7 +107,7 @@ func resourceAwsSnsTopicSubscriptionUpdate(d *schema.ResourceData, meta interfac
 		// Re-subscribe and set id
 		output, err := subscribeToSNSTopic(d, snsconn)
 		d.SetId(*output.SubscriptionArn)
-
+		d.Set("arn", *output.SubscriptionArn)
 	}
 
 	if d.HasChange("raw_message_delivery") {

@@ -39,13 +39,14 @@ if [ "${TF_DEV}x" != "x" ]; then
 fi
 
 # Build!
+TF_BUILD_ONLY=${TF_BUILD_ONLY:-./...}
 echo "==> Building..."
 gox \
     -os="${XC_OS}" \
     -arch="${XC_ARCH}" \
     -ldflags "-X main.GitCommit ${GIT_COMMIT}${GIT_DIRTY}" \
     -output "pkg/{{.OS}}_{{.Arch}}/terraform-{{.Dir}}" \
-    ./...
+    $TF_BUILD_ONLY
 
 # Make sure "terraform-terraform" is renamed properly
 for PLATFORM in $(find ./pkg -mindepth 1 -maxdepth 1 -type d); do

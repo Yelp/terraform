@@ -87,13 +87,7 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 									},
 								},
 							},
-							Set: func(v interface{}) int {
-								var buf bytes.Buffer
-								m := v.(map[string]interface{})
-								buf.WriteString(fmt.Sprintf("%s-", m["device_name"].(string)))
-								buf.WriteString(fmt.Sprintf("%s-", m["snapshot_id"].(string)))
-								return hashcode.String(buf.String())
-							},
+							Set: hashEbsBlockDevice,
 						},
 						"ephemeral_block_device": &schema.Schema{
 							Type:     schema.TypeSet,
@@ -112,13 +106,7 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 									},
 								},
 							},
-							Set: func(v interface{}) int {
-								var buf bytes.Buffer
-								m := v.(map[string]interface{})
-								buf.WriteString(fmt.Sprintf("%s-", m["device_name"].(string)))
-								buf.WriteString(fmt.Sprintf("%s-", m["virtual_name"].(string)))
-								return hashcode.String(buf.String())
-							},
+							Set: hashEphemeralBlockDevice,
 						},
 						"root_block_device": &schema.Schema{
 							// TODO: This is a set because we don't support singleton
@@ -159,10 +147,7 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 									},
 								},
 							},
-							Set: func(v interface{}) int {
-								// there can be only one root device; no need to hash anything
-								return 0
-							},
+							Set: hashRootBlockDevice,
 						},
 						"ebs_optimized": &schema.Schema{
 							Type:     schema.TypeBool,
@@ -237,16 +222,7 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 						},
 					},
 				},
-				Set: func(v interface{}) int {
-					var buf bytes.Buffer
-					m := v.(map[string]interface{})
-					buf.WriteString(fmt.Sprintf("%s-", m["ami"].(string)))
-					buf.WriteString(fmt.Sprintf("%s-", m["availability_zone"].(string)))
-					buf.WriteString(fmt.Sprintf("%s-", m["instance_type"].(string)))
-					buf.WriteString(fmt.Sprintf("%s-", m["spot_price"].(string)))
-					buf.WriteString(fmt.Sprintf("%s-", m["user_data"].(string)))
-					return hashcode.String(buf.String())
-				},
+				Set: hashLaunchSpecification,
 			},
 			// Everything on a spot fleet is ForceNew except target_capacity
 			"target_capacity": &schema.Schema{
@@ -257,12 +233,14 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 			"allocation_strategy": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				Default:  "lowestPrice",
 				ForceNew: true,
 			},
 			"excess_capacity_termination_policy": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
-				ForceNew: true,
+				Default:  "Default",
+				ForceNew: false,
 			},
 			"spot_price": &schema.Schema{
 				Type:     schema.TypeString,
@@ -295,6 +273,9 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 		ImageId:      aws.String(d["ami"].(string)),
 		InstanceType: aws.String(d["instance_type"].(string)),
 		SpotPrice:    aws.String(d["spot_price"].(string)),
+		Placement: &ec2.SpotPlacement{
+			AvailabilityZone: aws.String(d["availability_zone"].(string)),
+		},
 	}
 
 	if v, ok := d["ebs_optimized"]; ok {
@@ -525,7 +506,6 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 		TargetCapacity:                   aws.Int64(int64(d.Get("target_capacity").(int))),
 		ClientToken:                      aws.String(resource.UniqueId()),
 		TerminateInstancesWithExpiration: aws.Bool(d.Get("terminate_instances_with_expiration").(bool)),
-		ValidFrom:                        aws.Time(time.Now()),
 	}
 
 	if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
@@ -536,6 +516,14 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 		spotFleetConfig.AllocationStrategy = aws.String(v.(string))
 	} else {
 		spotFleetConfig.AllocationStrategy = aws.String("lowestPrice")
+	}
+
+	if v, ok := d.GetOk("valid_from"); ok {
+		valid_from, err := time.Parse(awsAutoscalingScheduleTimeLayout, v.(string))
+		if err != nil {
+			return err
+		}
+		spotFleetConfig.ValidFrom = &valid_from
 	}
 
 	if v, ok := d.GetOk("valid_until"); ok {
@@ -563,7 +551,7 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 
 	d.SetId(*resp.SpotFleetRequestId)
 
-	return resourceAwsSpotFleetRequestUpdate(d, meta)
+	return resourceAwsSpotFleetRequestRead(d, meta)
 }
 
 func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) error {
@@ -578,7 +566,8 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 	if err != nil {
 		// If the spot request was not found, return nil so that we can show
 		// that it is gone.
-		if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidSpotFleetRequestID.NotFound" {
+		ec2err, ok := err.(awserr.Error)
+		if ok && ec2err.Code() == "InvalidSpotFleetRequestID.NotFound" {
 			d.SetId("")
 			return nil
 		}
@@ -587,26 +576,258 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 		return err
 	}
 
-	request := resp.SpotFleetRequestConfigs[0]
+	sfr := resp.SpotFleetRequestConfigs[0]
 
 	// if the request is cancelled, then it is gone
-	if *request.SpotFleetRequestState == "cancelled" {
+	if *sfr.SpotFleetRequestState == "cancelled" {
 		d.SetId("")
 		return nil
 	}
 
-	d.Set("spot_request_state", request.SpotFleetRequestState)
+	d.SetId(*sfr.SpotFleetRequestId)
+	d.Set("spot_request_state", aws.StringValue(sfr.SpotFleetRequestState))
+
+	config := sfr.SpotFleetRequestConfig
+
+	if config.AllocationStrategy != nil {
+		d.Set("allocation_strategy", aws.StringValue(config.AllocationStrategy))
+	}
+
+	if config.ClientToken != nil {
+		d.Set("client_token", aws.StringValue(config.ClientToken))
+	}
+
+	if config.ExcessCapacityTerminationPolicy != nil {
+		d.Set("excess_capacity_termination_policy",
+			aws.StringValue(config.ExcessCapacityTerminationPolicy))
+	}
+
+	if config.IamFleetRole != nil {
+		d.Set("iam_fleet_role", aws.StringValue(config.IamFleetRole))
+	}
+
+	if config.SpotPrice != nil {
+		d.Set("spot_price", aws.StringValue(config.SpotPrice))
+	}
+
+	if config.TargetCapacity != nil {
+		d.Set("target_capacity", aws.Int64Value(config.TargetCapacity))
+	}
+
+	if config.TerminateInstancesWithExpiration != nil {
+		d.Set("terminate_instances_with_expiration",
+			aws.BoolValue(config.TerminateInstancesWithExpiration))
+	}
+
+	if config.ValidFrom != nil {
+		d.Set("valid_from",
+			aws.TimeValue(config.ValidFrom).Format(awsAutoscalingScheduleTimeLayout))
+	}
+
+	if config.ValidUntil != nil {
+		d.Set("valid_until",
+			aws.TimeValue(config.ValidUntil).Format(awsAutoscalingScheduleTimeLayout))
+	}
+
+	d.Set("launch_specification", launchSpecsToSet(config.LaunchSpecifications, conn))
+
 	return nil
+}
+
+func launchSpecsToSet(ls []*ec2.SpotFleetLaunchSpecification, conn *ec2.EC2) *schema.Set {
+	specs := &schema.Set{F: hashLaunchSpecification}
+	for _, val := range ls {
+		dn, err := fetchRootDeviceName(aws.StringValue(val.ImageId), conn)
+		if err != nil {
+			log.Panic(err)
+		} else {
+			ls := launchSpecToMap(val, dn)
+			specs.Add(ls)
+		}
+	}
+	return specs
+}
+
+func launchSpecToMap(
+	l *ec2.SpotFleetLaunchSpecification,
+	rootDevName *string,
+) map[string]interface{} {
+	m := make(map[string]interface{})
+
+	m["root_block_device"] = rootBlockDeviceToSet(l.BlockDeviceMappings, rootDevName)
+	m["ebs_block_device"] = ebsBlockDevicesToSet(l.BlockDeviceMappings, rootDevName)
+	m["ephemeral_block_device"] = ephemeralBlockDevicesToSet(l.BlockDeviceMappings)
+
+	if l.ImageId != nil {
+		m["ami"] = aws.StringValue(l.ImageId)
+	}
+
+	if l.InstanceType != nil {
+		m["instance_type"] = aws.StringValue(l.InstanceType)
+	}
+
+	if l.SpotPrice != nil {
+		m["spot_price"] = aws.StringValue(l.SpotPrice)
+	}
+
+	if l.EbsOptimized != nil {
+		m["ebs_optimized"] = aws.BoolValue(l.EbsOptimized)
+	}
+
+	if l.Monitoring != nil && l.Monitoring.Enabled != nil {
+		m["monitoring"] = aws.BoolValue(l.Monitoring.Enabled)
+	}
+
+	if l.IamInstanceProfile != nil && l.IamInstanceProfile.Name != nil {
+		m["iam_instance_profile"] = aws.StringValue(l.IamInstanceProfile.Name)
+	}
+
+	if l.UserData != nil {
+		ud_dec, err := base64.StdEncoding.DecodeString(aws.StringValue(l.UserData))
+		if err == nil {
+			m["user_data"] = string(ud_dec)
+		}
+	}
+
+	if l.KeyName != nil {
+		m["key_name"] = aws.StringValue(l.KeyName)
+	}
+
+	if l.Placement != nil {
+		m["availability_zone"] = aws.StringValue(l.Placement.AvailabilityZone)
+	} else {
+		m["availability_zone"] = ""
+	}
+
+	// m["security_groups"] = securityGroupsToSet(l.SecutiryGroups)
+	return m
+}
+
+func ebsBlockDevicesToSet(bdm []*ec2.BlockDeviceMapping, rootDevName *string) *schema.Set {
+	set := &schema.Set{F: hashEphemeralBlockDevice}
+
+	for _, val := range bdm {
+		if val.Ebs != nil {
+			m := make(map[string]interface{})
+
+			ebs := val.Ebs
+
+			if val.DeviceName != nil {
+				if aws.StringValue(rootDevName) == aws.StringValue(val.DeviceName) {
+					continue
+				}
+
+				m["device_name"] = aws.StringValue(val.DeviceName)
+			}
+
+			if ebs.DeleteOnTermination != nil {
+				m["delete_on_termination"] = aws.BoolValue(ebs.DeleteOnTermination)
+			}
+
+			if ebs.SnapshotId != nil {
+				m["snapshot_id"] = aws.StringValue(ebs.SnapshotId)
+			}
+
+			if ebs.Encrypted != nil {
+				m["encrypted"] = aws.BoolValue(ebs.Encrypted)
+			}
+
+			if ebs.VolumeSize != nil {
+				m["volume_size"] = aws.Int64Value(ebs.VolumeSize)
+			}
+
+			if ebs.VolumeType != nil {
+				m["volume_type"] = aws.StringValue(ebs.VolumeType)
+			}
+
+			if ebs.Iops != nil {
+				m["iops"] = aws.Int64Value(ebs.Iops)
+			}
+
+			set.Add(m)
+		}
+	}
+
+	return set
+}
+
+func ephemeralBlockDevicesToSet(bdm []*ec2.BlockDeviceMapping) *schema.Set {
+	set := &schema.Set{F: hashEphemeralBlockDevice}
+
+	for _, val := range bdm {
+		if val.VirtualName != nil {
+			m := make(map[string]interface{})
+			m["virtual_name"] = aws.StringValue(val.VirtualName)
+
+			if val.DeviceName != nil {
+				m["device_name"] = aws.StringValue(val.DeviceName)
+			}
+
+			set.Add(m)
+		}
+	}
+
+	return set
+}
+
+func rootBlockDeviceToSet(
+	bdm []*ec2.BlockDeviceMapping,
+	rootDevName *string,
+) *schema.Set {
+	set := &schema.Set{F: hashRootBlockDevice}
+
+	if rootDevName != nil {
+		for _, val := range bdm {
+			if aws.StringValue(val.DeviceName) == aws.StringValue(rootDevName) {
+				m := make(map[string]interface{})
+				if val.Ebs.DeleteOnTermination != nil {
+					m["delete_on_termination"] = aws.BoolValue(val.Ebs.DeleteOnTermination)
+				}
+
+				if val.Ebs.VolumeSize != nil {
+					m["volume_size"] = aws.Int64Value(val.Ebs.VolumeSize)
+				}
+
+				if val.Ebs.VolumeType != nil {
+					m["volume_type"] = aws.StringValue(val.Ebs.VolumeType)
+				}
+
+				if val.Ebs.Iops != nil {
+					m["iops"] = aws.Int64Value(val.Ebs.Iops)
+				}
+
+				set.Add(m)
+			}
+		}
+	}
+
+	return set
 }
 
 func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{}) error {
 	// http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_ModifySpotFleetRequest.html
-	//	conn := meta.(*AWSClient).ec2conn
+	conn := meta.(*AWSClient).ec2conn
 
 	d.Partial(true)
-	// TODO: Adjust target capacity
 
-	return resourceAwsSpotFleetRequestRead(d, meta)
+	req := &ec2.ModifySpotFleetRequestInput{
+		SpotFleetRequestId: aws.String(d.Id()),
+	}
+
+	if val, ok := d.GetOk("target_capacity"); ok {
+		req.TargetCapacity = aws.Int64(int64(val.(int)))
+	}
+
+	if val, ok := d.GetOk("excess_capacity_termination_policy"); ok {
+		req.ExcessCapacityTerminationPolicy = aws.String(val.(string))
+	}
+
+	resp, err := conn.ModifySpotFleetRequest(req)
+	if err == nil && aws.BoolValue(resp.Return) {
+		// TODO: rollback to old values?
+	}
+
+	return nil
 }
 
 func resourceAwsSpotFleetRequestDelete(d *schema.ResourceData, meta interface{}) error {
@@ -625,4 +846,36 @@ func resourceAwsSpotFleetRequestDelete(d *schema.ResourceData, meta interface{})
 	}
 
 	return nil
+}
+
+func hashEphemeralBlockDevice(v interface{}) int {
+	var buf bytes.Buffer
+	m := v.(map[string]interface{})
+	buf.WriteString(fmt.Sprintf("%s-", m["device_name"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["virtual_name"].(string)))
+	return hashcode.String(buf.String())
+}
+
+func hashRootBlockDevice(v interface{}) int {
+	// there can be only one root device; no need to hash anything
+	return 0
+}
+
+func hashLaunchSpecification(v interface{}) int {
+	var buf bytes.Buffer
+	m := v.(map[string]interface{})
+	buf.WriteString(fmt.Sprintf("%s-", m["ami"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["availability_zone"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["instance_type"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["spot_price"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["user_data"].(string)))
+	return hashcode.String(buf.String())
+}
+
+func hashEbsBlockDevice(v interface{}) int {
+	var buf bytes.Buffer
+	m := v.(map[string]interface{})
+	buf.WriteString(fmt.Sprintf("%s-", m["device_name"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", m["snapshot_id"].(string)))
+	return hashcode.String(buf.String())
 }

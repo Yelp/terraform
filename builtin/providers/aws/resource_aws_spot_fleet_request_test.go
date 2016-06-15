@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"encoding/base64"
 	"fmt"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func TestAccAWSSpotFleetRequest_basic(t *testing.T) {
+func testAccAWSSpotFleetRequest_basic(t *testing.T) {
 	var sfr ec2.SpotFleetRequestConfig
 
 	resource.Test(t, resource.TestCase{
@@ -24,6 +25,28 @@ func TestAccAWSSpotFleetRequest_basic(t *testing.T) {
 					testAccCheckAWSSpotFleetRequestExists(
 						"aws_spot_fleet_request.foo", &sfr),
 					testAccCheckAWSSpotFleetRequestAttributes(&sfr),
+					resource.TestCheckResourceAttr(
+						"aws_spot_fleet_request.foo", "spot_request_state", "active"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSSpotFleetRequest_launchConfiguration(t *testing.T) {
+	var sfr ec2.SpotFleetRequestConfig
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSSpotFleetRequestDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSSpotFleetRequestWithAdvancedLaunchSpecConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSSpotFleetRequestExists(
+						"aws_spot_fleet_request.foo", &sfr),
+					testAccCheckAWSSpotFleetRequest_LaunchSpecAttributes(&sfr),
 					resource.TestCheckResourceAttr(
 						"aws_spot_fleet_request.foo", "spot_request_state", "active"),
 				),
@@ -74,6 +97,39 @@ func testAccCheckAWSSpotFleetRequestAttributes(
 		if *sfr.SpotFleetRequestState != "active" {
 			return fmt.Errorf("Unexpected request state: %s", *sfr.SpotFleetRequestState)
 		}
+		return nil
+	}
+}
+
+func testAccCheckAWSSpotFleetRequest_LaunchSpecAttributes(
+	sfr *ec2.SpotFleetRequestConfig) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		if len(sfr.SpotFleetRequestConfig.LaunchSpecifications) == 0 {
+			return fmt.Errorf("Missing launch specification")
+		}
+
+		spec := *sfr.SpotFleetRequestConfig.LaunchSpecifications[0]
+
+		if *spec.InstanceType != "c3.large" {
+			return fmt.Errorf("Unexpected launch specification instance type: %s", *spec.InstanceType)
+		}
+
+		if *spec.ImageId != "ami-f652979b" {
+			return fmt.Errorf("Unexpected launch specification image id: %s", *spec.ImageId)
+		}
+
+		if *spec.SpotPrice != "0.01" {
+			return fmt.Errorf("Unexpected launch specification spot price: %s", *spec.SpotPrice)
+		}
+
+		if *spec.WeightedCapacity != 2 {
+			return fmt.Errorf("Unexpected launch specification weighted capacity: %s", *spec.WeightedCapacity)
+		}
+
+		if *spec.UserData != base64.StdEncoding.EncodeToString([]byte("hello-world")) {
+			return fmt.Errorf("Unexpected launch specification user data: %s", *spec.UserData)
+		}
+
 		return nil
 	}
 }
@@ -140,6 +196,60 @@ resource "aws_spot_fleet_request" "foo" {
         ami = "ami-f652979b"
         key_name = "${aws_key_pair.debugging.key_name}"
         availability_zone = "us-east-1a"
+    }
+    depends_on = ["aws_iam_policy_attachment.test-attach"]
+}
+`
+
+const testAccAWSSpotFleetRequestWithAdvancedLaunchSpecConfig = `
+resource "aws_key_pair" "debugging" {
+	key_name = "tmp-key"
+	public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD3F6tyPEFEzV0LX3X8BsXdMsQz1x2cEikKDEY0aIj41qgxMCP/iteneqXSIFZBp5vizPvaoIR3Um9xK7PGoW8giupGn+EPuxIA4cDM4vzOqOkiMPhz5XK0whEjkVzTo4+S0puvDZuwIsdiW9mxhJc7tgBNL0cYlWSYVkz4G/fslNfRPW5mYAM49f4fhtxPb5ok4Q2Lg9dPKVHO/Bgeu5woMc7RY0p1ej6D4CKFE6lymSDJpW0YHX/wqE9+cfEauh7xZcG0q9t2ta6F6fmX0agvpFyZo8aFbXeUBr7osSCJNgvavWbM/06niWrOvYX2xwWdhXmXSrbX8ZbabVohBK41 phodgson@thoughtworks.com"
+}
+
+resource "aws_iam_policy_attachment" "test-attach" {
+    name = "test-attachment"
+    roles = ["${aws_iam_role.test-role.name}"]
+    policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetRole"
+}
+
+resource "aws_iam_role" "test-role" {
+    name = "test-role"
+    assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "spotfleet.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_spot_fleet_request" "foo" {
+    iam_fleet_role = "${aws_iam_role.test-role.arn}"
+    spot_price = "0.005"
+    target_capacity = 4
+    valid_until = "2019-11-04T20:44:20Z"
+    allocation_strategy = "diversified"
+    launch_specification {
+        instance_type = "c3.large"
+        ami = "ami-f652979b"
+        key_name = "${aws_key_pair.debugging.key_name}"
+        availability_zone = "us-east-1a"
+        spot_price = "0.01"
+        weighted_capacity = 2
+        user_data = "hello-world"
+        root_block_device {
+            volume_size = "300"
+            volume_type = "gp2"
+        }
     }
     depends_on = ["aws_iam_policy_attachment.test-attach"]
 }

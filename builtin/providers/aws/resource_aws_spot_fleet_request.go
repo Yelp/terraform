@@ -392,6 +392,7 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 	}
 
 	if v, ok := d["weighted_capacity"]; ok && v != "" {
+		opts.KeyName = aws.String(v.(string))
 		wc, err := strconv.ParseFloat(v.(string), 64)
 		if err != nil {
 			return nil, err
@@ -642,7 +643,6 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 	}
 
 	d.SetId(*sfr.SpotFleetRequestId)
-
 	d.Set("spot_request_state", aws.StringValue(sfr.SpotFleetRequestState))
 
 	config := sfr.SpotFleetRequestConfig

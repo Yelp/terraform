@@ -64,7 +64,7 @@ important to your application workload, such as vCPUs, memory, or I/O.
 lowestPrice.
 * `excess_capacity_termination_policy` - Indicates whether running Spot
   instances should be terminated if the target capacity of the Spot fleet
-request is decreased below the current size of the Spot fleet. 
+  request is decreased below the current size of the Spot fleet.
 * `terminate_instances_with_expiration` -Indicates whether running Spot
   instances should be terminated when the Spot fleet request expires.
 * `valid_until` - The end date and time of the request, in UTC ISO8601 format

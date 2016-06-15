@@ -182,10 +182,11 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 							ForceNew: true,
 						},
 						"key_name": &schema.Schema{
-							Type:     schema.TypeString,
-							Optional: true,
-							ForceNew: true,
-							Computed: true,
+							Type:         schema.TypeString,
+							Optional:     true,
+							ForceNew:     true,
+							Computed:     true,
+							ValidateFunc: validateSpotFleetRequestKeyName,
 						},
 						"monitoring": &schema.Schema{
 							Type:     schema.TypeBool,
@@ -335,7 +336,7 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 		// See http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_RunInstances.html
 		sgs := v.(*schema.Set).List()
 		if len(sgs) > 0 && hasSubnet {
-			fmt.Printf("[WARN] Deprecated. Attempting to use 'security_groups' within a VPC instance. Use 'vpc_security_group_ids' instead.")
+			log.Printf("[WARN] Deprecated. Attempting to use 'security_groups' within a VPC instance. Use 'vpc_security_group_ids' instead.")
 		}
 		for _, v := range sgs {
 			str := v.(string)
@@ -384,12 +385,7 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 	}
 
 	if v, ok := d["key_name"]; ok {
-		key_name := v.(string)
-		err := validateSpotFleetRequestKeyName(key_name)
-		if err != nil {
-			return nil, err
-		}
-		opts.KeyName = aws.String(key_name)
+		opts.KeyName = aws.String(v.(string))
 	}
 
 	if v, ok := d["weighted_capacity"]; ok && v != "" {
@@ -411,11 +407,14 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 	return opts, nil
 }
 
-func validateSpotFleetRequestKeyName(name string) error {
-	if name == "" {
-		return fmt.Errorf("Key name cannot be empty.")
+func validateSpotFleetRequestKeyName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+
+	if value == "" {
+		errors = append(errors, fmt.Errorf("Key name cannot be empty."))
 	}
-	return nil
+
+	return
 }
 
 func readSpotFleetBlockDeviceMappingsFromConfig(
@@ -583,7 +582,7 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 		DryRun:                 aws.Bool(false),
 	}
 
-	fmt.Printf("[DEBUG] Requesting spot fleet with these opts: %+v", spotFleetOpts)
+	log.Printf("[DEBUG] Requesting spot fleet with these opts: %+v", spotFleetOpts)
 
 	// Since IAM is eventually consistent, we retry creation as a newly created role may not
 	// take effect immediately, resulting in an InvalidSpotFleetRequestConfig error
@@ -905,7 +904,7 @@ func resourceAwsSpotFleetRequestDelete(d *schema.ResourceData, meta interface{})
 	// http://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_CancelSpotFleetRequests.html
 	conn := meta.(*AWSClient).ec2conn
 
-	fmt.Printf("[INFO] Cancelling spot fleet request: %s", d.Id())
+	log.Printf("[INFO] Cancelling spot fleet request: %s", d.Id())
 	_, err := conn.CancelSpotFleetRequests(&ec2.CancelSpotFleetRequestsInput{
 		SpotFleetRequestIds: []*string{aws.String(d.Id())},
 		TerminateInstances:  aws.Bool(d.Get("terminate_instances_with_expiration").(bool)),

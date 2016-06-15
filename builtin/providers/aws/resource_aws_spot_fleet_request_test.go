@@ -56,8 +56,8 @@ func TestAccAWSSpotFleetRequest_launchConfiguration(t *testing.T) {
 }
 
 func TestAccAWSSpotFleetRequest_CannotUseEmptyKeyName(t *testing.T) {
-	err := validateSpotFleetRequestKeyName("")
-	if err == nil {
+	_, errors := validateSpotFleetRequestKeyName("", "key_name")
+	if len(errors) == 0 {
 		t.Fatalf("Expected the key name to trigger a validation error")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform/terraform"
 )
 
-func testAccAWSSpotFleetRequest_basic(t *testing.T) {
+func TestAccAWSSpotFleetRequest_basic(t *testing.T) {
 	var sfr ec2.SpotFleetRequestConfig
 
 	resource.Test(t, resource.TestCase{
@@ -53,6 +53,13 @@ func TestAccAWSSpotFleetRequest_launchConfiguration(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccAWSSpotFleetRequest_CannotUseEmptyKeyName(t *testing.T) {
+	err := validateSpotFleetRequestKeyName("")
+	if err == nil {
+		t.Fatalf("Expected the key name to trigger a validation error")
+	}
 }
 
 func testAccCheckAWSSpotFleetRequestExists(

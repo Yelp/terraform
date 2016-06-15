@@ -385,14 +385,14 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 
 	if v, ok := d["key_name"]; ok {
 		key_name := v.(string)
-		if len(key_name) == 0 {
-			return nil, fmt.Errorf("Key name cannot be empty.")
+		err := validateSpotFleetRequestKeyName(key_name)
+		if err != nil {
+			return nil, err
 		}
 		opts.KeyName = aws.String(key_name)
 	}
 
 	if v, ok := d["weighted_capacity"]; ok && v != "" {
-		opts.KeyName = aws.String(v.(string))
 		wc, err := strconv.ParseFloat(v.(string), 64)
 		if err != nil {
 			return nil, err
@@ -409,6 +409,13 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 	}
 
 	return opts, nil
+}
+
+func validateSpotFleetRequestKeyName(name string) error {
+	if name == "" {
+		return fmt.Errorf("Key name cannot be empty.")
+	}
+	return nil
 }
 
 func readSpotFleetBlockDeviceMappingsFromConfig(

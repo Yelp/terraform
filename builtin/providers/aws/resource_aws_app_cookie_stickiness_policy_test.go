@@ -8,18 +8,21 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/elb"
 
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 )
 
 func TestAccAWSAppCookieStickinessPolicy_basic(t *testing.T) {
+	lbName := fmt.Sprintf("tf-test-lb-%s", acctest.RandString(5))
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckAppCookieStickinessPolicyDestroy,
 		Steps: []resource.TestStep{
 			resource.TestStep{
-				Config: testAccAppCookieStickinessPolicyConfig,
+				Config: testAccAppCookieStickinessPolicyConfig(lbName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAppCookieStickinessPolicy(
 						"aws_elb.lb",
@@ -28,13 +31,49 @@ func TestAccAWSAppCookieStickinessPolicy_basic(t *testing.T) {
 				),
 			},
 			resource.TestStep{
-				Config: testAccAppCookieStickinessPolicyConfigUpdate,
+				Config: testAccAppCookieStickinessPolicyConfigUpdate(lbName),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAppCookieStickinessPolicy(
 						"aws_elb.lb",
 						"aws_app_cookie_stickiness_policy.foo",
 					),
 				),
+			},
+		},
+	})
+}
+
+func TestAccAWSAppCookieStickinessPolicy_missingLB(t *testing.T) {
+	lbName := fmt.Sprintf("tf-test-lb-%s", acctest.RandString(5))
+
+	// check that we can destroy the policy if the LB is missing
+	removeLB := func() {
+		conn := testAccProvider.Meta().(*AWSClient).elbconn
+		deleteElbOpts := elb.DeleteLoadBalancerInput{
+			LoadBalancerName: aws.String(lbName),
+		}
+		if _, err := conn.DeleteLoadBalancer(&deleteElbOpts); err != nil {
+			t.Fatalf("Error deleting ELB: %s", err)
+		}
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAppCookieStickinessPolicyDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAppCookieStickinessPolicyConfig(lbName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAppCookieStickinessPolicy(
+						"aws_elb.lb",
+						"aws_app_cookie_stickiness_policy.foo",
+					),
+				),
+			},
+			resource.TestStep{
+				PreConfig: removeLB,
+				Config:    testAccAppCookieStickinessPolicyConfigDestroy(lbName),
 			},
 		},
 	})
@@ -100,9 +139,10 @@ func testAccCheckAppCookieStickinessPolicy(elbResource string, policyResource st
 	}
 }
 
-const testAccAppCookieStickinessPolicyConfig = `
+func testAccAppCookieStickinessPolicyConfig(rName string) string {
+	return fmt.Sprintf(`
 resource "aws_elb" "lb" {
-	name = "test-lb"
+	name = "%s"
 	availability_zones = ["us-west-2a"]
 	listener {
 		instance_port = 8000
@@ -117,13 +157,14 @@ resource "aws_app_cookie_stickiness_policy" "foo" {
 	load_balancer = "${aws_elb.lb.id}"
 	lb_port = 80
 	cookie_name = "MyAppCookie"
+}`, rName)
 }
-`
 
 // Change the cookie_name to "MyOtherAppCookie".
-const testAccAppCookieStickinessPolicyConfigUpdate = `
+func testAccAppCookieStickinessPolicyConfigUpdate(rName string) string {
+	return fmt.Sprintf(`
 resource "aws_elb" "lb" {
-	name = "test-lb"
+	name = "%s"
 	availability_zones = ["us-west-2a"]
 	listener {
 		instance_port = 8000
@@ -138,5 +179,20 @@ resource "aws_app_cookie_stickiness_policy" "foo" {
 	load_balancer = "${aws_elb.lb.id}"
 	lb_port = 80
 	cookie_name = "MyOtherAppCookie"
+}`, rName)
 }
-`
+
+// attempt to destroy the policy, but we'll delete the LB in the PreConfig
+func testAccAppCookieStickinessPolicyConfigDestroy(rName string) string {
+	return fmt.Sprintf(`
+resource "aws_elb" "lb" {
+	name = "%s"
+	availability_zones = ["us-west-2a"]
+	listener {
+		instance_port = 8000
+		instance_protocol = "http"
+		lb_port = 80
+		lb_protocol = "http"
+	}
+}`, rName)
+}

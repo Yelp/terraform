@@ -182,10 +182,11 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 							ForceNew: true,
 						},
 						"key_name": &schema.Schema{
-							Type:     schema.TypeString,
-							Optional: true,
-							ForceNew: true,
-							Computed: true,
+							Type:         schema.TypeString,
+							Optional:     true,
+							ForceNew:     true,
+							Computed:     true,
+							ValidateFunc: validateSpotFleetRequestKeyName,
 						},
 						"monitoring": &schema.Schema{
 							Type:     schema.TypeBool,
@@ -200,7 +201,7 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 						},
 						"spot_price": &schema.Schema{
 							Type:     schema.TypeString,
-							Required: true,
+							Optional: true,
 							ForceNew: true,
 						},
 						"subnet_id": &schema.Schema{
@@ -275,13 +276,20 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
+			"spot_request_state": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
+			"client_token": &schema.Schema{
+				Type:     schema.TypeString,
+				Computed: true,
+			},
 		},
 	}
 }
 
 func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{}) (*ec2.SpotFleetLaunchSpecification, error) {
 	conn := meta.(*AWSClient).ec2conn
-
 	opts := &ec2.SpotFleetLaunchSpecification{
 		ImageId:      aws.String(d["ami"].(string)),
 		InstanceType: aws.String(d["instance_type"].(string)),
@@ -380,7 +388,7 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 		opts.KeyName = aws.String(v.(string))
 	}
 
-	if v, ok := d["weighted_capacity"]; ok {
+	if v, ok := d["weighted_capacity"]; ok && v != "" {
 		wc, err := strconv.ParseFloat(v.(string), 64)
 		if err != nil {
 			return nil, err
@@ -397,6 +405,16 @@ func buildSpotFleetLaunchSpecification(d map[string]interface{}, meta interface{
 	}
 
 	return opts, nil
+}
+
+func validateSpotFleetRequestKeyName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+
+	if value == "" {
+		errors = append(errors, fmt.Errorf("Key name cannot be empty."))
+	}
+
+	return
 }
 
 func readSpotFleetBlockDeviceMappingsFromConfig(
@@ -565,7 +583,27 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 	}
 
 	log.Printf("[DEBUG] Requesting spot fleet with these opts: %+v", spotFleetOpts)
-	resp, err := conn.RequestSpotFleet(spotFleetOpts)
+
+	// Since IAM is eventually consistent, we retry creation as a newly created role may not
+	// take effect immediately, resulting in an InvalidSpotFleetRequestConfig error
+	var resp *ec2.RequestSpotFleetOutput
+	err = resource.Retry(1*time.Minute, func() *resource.RetryError {
+		var err error
+		resp, err = conn.RequestSpotFleet(spotFleetOpts)
+
+		if err != nil {
+			if awsErr, ok := err.(awserr.Error); ok {
+				// IAM is eventually consistent :/
+				if awsErr.Code() == "InvalidSpotFleetRequestConfig" {
+					return resource.RetryableError(
+						fmt.Errorf("[WARN] Error creating Spot fleet request, retrying: %s", err))
+				}
+			}
+			return resource.NonRetryableError(err)
+		}
+		return nil
+	})
+
 	if err != nil {
 		return fmt.Errorf("Error requesting spot fleet: %s", err)
 	}

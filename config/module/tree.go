@@ -33,6 +33,20 @@ func NewTree(name string, c *config.Config) *Tree {
 	return &Tree{config: c, name: name}
 }
 
+// NewEmptyTree returns a new tree that is empty (contains no configuration).
+func NewEmptyTree() *Tree {
+	t := &Tree{config: &config.Config{}}
+
+	// We do this dummy load so that the tree is marked as "loaded". It
+	// should never fail because this is just about a no-op. If it does fail
+	// we panic so we can know its a bug.
+	if err := t.Load(nil, GetModeGet); err != nil {
+		panic(err)
+	}
+
+	return t
+}
+
 // NewTreeModule is like NewTree except it parses the configuration in
 // the directory and gives it a specific name. Use a blank name "" to specify
 // the root module.
@@ -52,6 +66,10 @@ func (t *Tree) Config() *config.Config {
 
 // Child returns the child with the given path (by name).
 func (t *Tree) Child(path []string) *Tree {
+	if t == nil {
+		return nil
+	}
+
 	if len(path) == 0 {
 		return t
 	}
@@ -156,7 +174,7 @@ func (t *Tree) Load(s getter.Storage, mode GetMode) error {
 
 		// Get the directory where this module is so we can load it
 		key := strings.Join(path, ".")
-		key = "root." + key
+		key = fmt.Sprintf("root.%s-%s", key, m.Source)
 		dir, ok, err := getStorage(s, key, source, mode)
 		if err != nil {
 			return err

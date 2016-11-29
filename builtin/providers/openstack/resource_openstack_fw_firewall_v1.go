@@ -5,10 +5,10 @@ import (
 	"log"
 	"time"
 
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/fwaas/firewalls"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/rackspace/gophercloud"
-	"github.com/rackspace/gophercloud/openstack/networking/v2/extensions/fwaas/firewalls"
 )
 
 func resourceFWFirewallV1() *schema.Resource {
@@ -17,6 +17,9 @@ func resourceFWFirewallV1() *schema.Resource {
 		Read:   resourceFWFirewallV1Read,
 		Update: resourceFWFirewallV1Update,
 		Delete: resourceFWFirewallV1Delete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"region": &schema.Schema{
@@ -40,7 +43,7 @@ func resourceFWFirewallV1() *schema.Resource {
 			"admin_state_up": &schema.Schema{
 				Type:     schema.TypeBool,
 				Optional: true,
-				Computed: true,
+				Default:  true,
 			},
 			"tenant_id": &schema.Schema{
 				Type:     schema.TypeString,
@@ -105,10 +108,11 @@ func resourceFWFirewallV1Read(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	firewall, err := firewalls.Get(networkingClient, d.Id()).Extract()
-
 	if err != nil {
 		return CheckDeleted(d, err, "firewall")
 	}
+
+	log.Printf("[DEBUG] Read OpenStack Firewall %s: %#v", d.Id(), firewall)
 
 	d.Set("name", firewall.Name)
 	d.Set("description", firewall.Description)
@@ -227,14 +231,11 @@ func waitForFirewallDeletion(networkingClient *gophercloud.ServiceClient, id str
 		log.Printf("[DEBUG] Get firewall %s => %#v", id, fw)
 
 		if err != nil {
-			httpStatus := err.(*gophercloud.UnexpectedResponseCodeError)
-			log.Printf("[DEBUG] Get firewall %s status is %d", id, httpStatus.Actual)
-
-			if httpStatus.Actual == 404 {
+			if _, ok := err.(gophercloud.ErrDefault404); ok {
 				log.Printf("[DEBUG] Firewall %s is actually deleted", id)
 				return "", "DELETED", nil
 			}
-			return nil, "", fmt.Errorf("Unexpected status code %d", httpStatus.Actual)
+			return nil, "", fmt.Errorf("Unexpected error: %s", err)
 		}
 
 		log.Printf("[DEBUG] Firewall %s deletion is pending", id)

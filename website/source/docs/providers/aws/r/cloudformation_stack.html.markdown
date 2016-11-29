@@ -15,13 +15,23 @@ Provides a CloudFormation Stack resource.
 ```
 resource "aws_cloudformation_stack" "network" {
   name = "networking-stack"
+  parameters {
+    VPCCidr = "10.0.0.0/16"
+  }
   template_body = <<STACK
 {
+  "Parameters" : {
+    "VPCCidr" : {
+      "Type" : "String",
+      "Default" : "10.0.0.0/16",
+      "Description" : "Enter the CIDR block for the VPC. Default is 10.0.0.0/16."
+    }
+  },
   "Resources" : {
     "my-vpc": {
       "Type" : "AWS::EC2::VPC",
       "Properties" : {
-        "CidrBlock" : "10.0.0.0/16",
+        "CidrBlock" : { "Ref" : "VPCCidr" },
         "Tags" : [
           {"Key": "Name", "Value": "Primary_CF_VPC"}
         ]
@@ -59,5 +69,5 @@ The following arguments are supported:
 
 The following attributes are exported:
 
-* `arn` - A unique identifier of the stack.
+* `id` - A unique identifier of the stack.
 * `outputs` - A list of output structures.

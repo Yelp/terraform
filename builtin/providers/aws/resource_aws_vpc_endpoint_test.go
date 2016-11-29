@@ -2,6 +2,7 @@ package aws
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -25,6 +26,7 @@ func TestAccAWSVpcEndpoint_basic(t *testing.T) {
 				Config: testAccVpcEndpointWithRouteTableAndPolicyConfig,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckVpcEndpointExists("aws_vpc_endpoint.second-private-s3", &endpoint),
+					testAccCheckVpcEndpointPrefixListAvailable("aws_vpc_endpoint.second-private-s3"),
 				),
 			},
 		},
@@ -54,6 +56,60 @@ func TestAccAWSVpcEndpoint_withRouteTableAndPolicy(t *testing.T) {
 					testAccCheckVpcEndpointExists("aws_vpc_endpoint.second-private-s3", &endpoint),
 					testAccCheckRouteTableExists("aws_route_table.default", &routeTable),
 				),
+			},
+		},
+	})
+}
+
+func TestAccAWSVpcEndpoint_WithoutRouteTableOrPolicyConfig(t *testing.T) {
+	var endpoint ec2.VpcEndpoint
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:      func() { testAccPreCheck(t) },
+		IDRefreshName: "aws_vpc_endpoint.second-private-s3",
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpcEndpointDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccVpcEndpointWithoutRouteTableOrPolicyConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckVpcEndpointExists("aws_vpc_endpoint.second-private-s3", &endpoint),
+					testAccCheckVpcEndpointPrefixListAvailable("aws_vpc_endpoint.second-private-s3"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSVpcEndpoint_removed(t *testing.T) {
+	var endpoint ec2.VpcEndpoint
+
+	// reach out and DELETE the VPC Endpoint outside of Terraform
+	testDestroy := func(*terraform.State) error {
+		conn := testAccProvider.Meta().(*AWSClient).ec2conn
+		input := &ec2.DeleteVpcEndpointsInput{
+			VpcEndpointIds: []*string{endpoint.VpcEndpointId},
+		}
+
+		_, err := conn.DeleteVpcEndpoints(input)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckVpcEndpointDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccVpcEndpointWithoutRouteTableOrPolicyConfig,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckVpcEndpointExists("aws_vpc_endpoint.second-private-s3", &endpoint),
+					testDestroy,
+				),
+				ExpectNonEmptyPlan: true,
 			},
 		},
 	})
@@ -113,6 +169,25 @@ func testAccCheckVpcEndpointExists(n string, endpoint *ec2.VpcEndpoint) resource
 		}
 
 		*endpoint = *resp.VpcEndpoints[0]
+
+		return nil
+	}
+}
+
+func testAccCheckVpcEndpointPrefixListAvailable(n string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, ok := s.RootModule().Resources[n]
+		if !ok {
+			return fmt.Errorf("Not found: %s", n)
+		}
+
+		prefixListID := rs.Primary.Attributes["prefix_list_id"]
+		if prefixListID == "" {
+			return fmt.Errorf("Prefix list ID not available")
+		}
+		if !strings.HasPrefix(prefixListID, "pl") {
+			return fmt.Errorf("Prefix list ID does not appear to be a valid value: '%s'", prefixListID)
+		}
 
 		return nil
 	}
@@ -204,5 +279,16 @@ resource "aws_route_table" "default" {
 resource "aws_route_table_association" "main" {
     subnet_id = "${aws_subnet.foo.id}"
     route_table_id = "${aws_route_table.default.id}"
+}
+`
+
+const testAccVpcEndpointWithoutRouteTableOrPolicyConfig = `
+resource "aws_vpc" "foo" {
+    cidr_block = "10.0.0.0/16"
+}
+
+resource "aws_vpc_endpoint" "second-private-s3" {
+    vpc_id = "${aws_vpc.foo.id}"
+    service_name = "com.amazonaws.us-west-2.s3"
 }
 `

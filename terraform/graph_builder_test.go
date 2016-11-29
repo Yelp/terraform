@@ -173,6 +173,7 @@ func TestBuiltinGraphBuilder_cbdDepNonCbd(t *testing.T) {
 	}
 }
 
+// This now returns no errors due to a general fix while building the graph
 func TestBuiltinGraphBuilder_cbdDepNonCbd_errorsWhenVerbose(t *testing.T) {
 	b := &BuiltinGraphBuilder{
 		Root:     testModule(t, "graph-builder-cbd-non-cbd"),
@@ -181,8 +182,8 @@ func TestBuiltinGraphBuilder_cbdDepNonCbd_errorsWhenVerbose(t *testing.T) {
 	}
 
 	_, err := b.Build(RootModulePath)
-	if err == nil {
-		t.Fatalf("expected err, got none")
+	if err != nil {
+		t.Fatalf("err: %s", err)
 	}
 }
 
@@ -295,16 +296,11 @@ provider.aws (close)
 
 const testBuiltinGraphBuilderVerboseStr = `
 aws_instance.db
-  aws_instance.db (destroy tainted)
   aws_instance.db (destroy)
-aws_instance.db (destroy tainted)
-  aws_instance.web (destroy tainted)
 aws_instance.db (destroy)
   aws_instance.web (destroy)
 aws_instance.web
   aws_instance.db
-aws_instance.web (destroy tainted)
-  provider.aws
 aws_instance.web (destroy)
   provider.aws
 provider.aws

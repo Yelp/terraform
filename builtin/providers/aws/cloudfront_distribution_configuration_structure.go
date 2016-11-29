@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"time"
 
@@ -20,6 +21,18 @@ import (
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
 )
+
+// cloudFrontRoute53ZoneID defines the route 53 zone ID for CloudFront. This
+// is used to set the zone_id attribute.
+const cloudFrontRoute53ZoneID = "Z2FDTNDATAQYW2"
+
+// Define Sort interface for []*string so we can ensure the order of
+// geo_restrictions.locations
+type StringPtrSlice []*string
+
+func (p StringPtrSlice) Len() int           { return len(p) }
+func (p StringPtrSlice) Less(i, j int) bool { return *p[i] < *p[j] }
+func (p StringPtrSlice) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 
 // Assemble the *cloudfront.DistributionConfig variable. Calls out to various
 // expander functions to convert attributes and sub-attributes to the various
@@ -33,6 +46,7 @@ func expandDistributionConfig(d *schema.ResourceData) *cloudfront.DistributionCo
 		CustomErrorResponses: expandCustomErrorResponses(d.Get("custom_error_response").(*schema.Set)),
 		DefaultCacheBehavior: expandDefaultCacheBehavior(d.Get("default_cache_behavior").(*schema.Set).List()[0].(map[string]interface{})),
 		Enabled:              aws.Bool(d.Get("enabled").(bool)),
+		HttpVersion:          aws.String(d.Get("http_version").(string)),
 		Origins:              expandOrigins(d.Get("origin").(*schema.Set)),
 		PriceClass:           aws.String(d.Get("price_class").(string)),
 	}
@@ -73,6 +87,7 @@ func expandDistributionConfig(d *schema.ResourceData) *cloudfront.DistributionCo
 	} else {
 		distributionConfig.WebACLId = aws.String("")
 	}
+
 	return distributionConfig
 }
 
@@ -87,6 +102,7 @@ func flattenDistributionConfig(d *schema.ResourceData, distributionConfig *cloud
 
 	d.Set("enabled", distributionConfig.Enabled)
 	d.Set("price_class", distributionConfig.PriceClass)
+	d.Set("hosted_zone_id", cloudFrontRoute53ZoneID)
 
 	err = d.Set("default_cache_behavior", flattenDefaultCacheBehavior(distributionConfig.DefaultCacheBehavior))
 	if err != nil {
@@ -107,6 +123,9 @@ func flattenDistributionConfig(d *schema.ResourceData, distributionConfig *cloud
 	}
 	if distributionConfig.DefaultRootObject != nil {
 		d.Set("default_root_object", distributionConfig.DefaultRootObject)
+	}
+	if distributionConfig.HttpVersion != nil {
+		d.Set("http_version", distributionConfig.HttpVersion)
 	}
 	if distributionConfig.WebACLId != nil {
 		d.Set("web_acl_id", distributionConfig.WebACLId)
@@ -358,11 +377,14 @@ func expandForwardedValues(m map[string]interface{}) *cloudfront.ForwardedValues
 	fv := &cloudfront.ForwardedValues{
 		QueryString: aws.Bool(m["query_string"].(bool)),
 	}
-	if v, ok := m["cookies"]; ok {
+	if v, ok := m["cookies"]; ok && v.(*schema.Set).Len() > 0 {
 		fv.Cookies = expandCookiePreference(v.(*schema.Set).List()[0].(map[string]interface{}))
 	}
 	if v, ok := m["headers"]; ok {
 		fv.Headers = expandHeaders(v.([]interface{}))
+	}
+	if v, ok := m["query_string_cache_keys"]; ok {
+		fv.QueryStringCacheKeys = expandQueryStringCacheKeys(v.([]interface{}))
 	}
 	return fv
 }
@@ -376,6 +398,9 @@ func flattenForwardedValues(fv *cloudfront.ForwardedValues) map[string]interface
 	if fv.Headers != nil {
 		m["headers"] = flattenHeaders(fv.Headers)
 	}
+	if fv.QueryStringCacheKeys != nil {
+		m["query_string_cache_keys"] = flattenQueryStringCacheKeys(fv.QueryStringCacheKeys)
+	}
 	return m
 }
 
@@ -385,10 +410,15 @@ func forwardedValuesHash(v interface{}) int {
 	var buf bytes.Buffer
 	m := v.(map[string]interface{})
 	buf.WriteString(fmt.Sprintf("%t-", m["query_string"].(bool)))
-	if d, ok := m["cookies"]; ok {
+	if d, ok := m["cookies"]; ok && d.(*schema.Set).Len() > 0 {
 		buf.WriteString(fmt.Sprintf("%d-", cookiePreferenceHash(d.(*schema.Set).List()[0].(map[string]interface{}))))
 	}
 	if d, ok := m["headers"]; ok {
+		for _, e := range sortInterfaceSlice(d.([]interface{})) {
+			buf.WriteString(fmt.Sprintf("%s-", e.(string)))
+		}
+	}
+	if d, ok := m["query_string_cache_keys"]; ok {
 		for _, e := range sortInterfaceSlice(d.([]interface{})) {
 			buf.WriteString(fmt.Sprintf("%s-", e.(string)))
 		}
@@ -406,6 +436,20 @@ func expandHeaders(d []interface{}) *cloudfront.Headers {
 func flattenHeaders(h *cloudfront.Headers) []interface{} {
 	if h.Items != nil {
 		return flattenStringList(h.Items)
+	}
+	return []interface{}{}
+}
+
+func expandQueryStringCacheKeys(d []interface{}) *cloudfront.QueryStringCacheKeys {
+	return &cloudfront.QueryStringCacheKeys{
+		Quantity: aws.Int64(int64(len(d))),
+		Items:    expandStringList(d),
+	}
+}
+
+func flattenQueryStringCacheKeys(k *cloudfront.QueryStringCacheKeys) []interface{} {
+	if k.Items != nil {
+		return flattenStringList(k.Items)
 	}
 	return []interface{}{}
 }
@@ -527,6 +571,15 @@ func expandOrigin(m map[string]interface{}) *cloudfront.Origin {
 			origin.S3OriginConfig = expandS3OriginConfig(s[0].(map[string]interface{}))
 		}
 	}
+
+	// if both custom and s3 origin are missing, add an empty s3 origin
+	// One or the other must be specified, but the S3 origin can be "empty"
+	if origin.S3OriginConfig == nil && origin.CustomOriginConfig == nil {
+		origin.S3OriginConfig = &cloudfront.S3OriginConfig{
+			OriginAccessIdentity: aws.String(""),
+		}
+	}
+
 	return origin
 }
 
@@ -544,7 +597,9 @@ func flattenOrigin(or *cloudfront.Origin) map[string]interface{} {
 		m["origin_path"] = *or.OriginPath
 	}
 	if or.S3OriginConfig != nil {
-		m["s3_origin_config"] = schema.NewSet(s3OriginConfigHash, []interface{}{flattenS3OriginConfig(or.S3OriginConfig)})
+		if or.S3OriginConfig.OriginAccessIdentity != nil && *or.S3OriginConfig.OriginAccessIdentity != "" {
+			m["s3_origin_config"] = schema.NewSet(s3OriginConfigHash, []interface{}{flattenS3OriginConfig(or.S3OriginConfig)})
+		}
 	}
 	return m
 }
@@ -857,6 +912,7 @@ func expandGeoRestriction(m map[string]interface{}) *cloudfront.GeoRestriction {
 	if v, ok := m["locations"]; ok {
 		gr.Quantity = aws.Int64(int64(len(v.([]interface{}))))
 		gr.Items = expandStringList(v.([]interface{}))
+		sort.Sort(StringPtrSlice(gr.Items))
 	} else {
 		gr.Quantity = aws.Int64(0)
 	}
@@ -868,6 +924,7 @@ func flattenGeoRestriction(gr *cloudfront.GeoRestriction) map[string]interface{}
 
 	m["restriction_type"] = *gr.RestrictionType
 	if gr.Items != nil {
+		sort.Sort(StringPtrSlice(gr.Items))
 		m["locations"] = flattenStringList(gr.Items)
 	}
 	return m

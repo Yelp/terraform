@@ -7,7 +7,7 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
 
-	"github.com/rackspace/gophercloud/openstack/compute/v2/extensions/secgroups"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
 )
 
 func TestAccComputeV2SecGroup_basic(t *testing.T) {
@@ -118,6 +118,26 @@ func TestAccComputeV2SecGroup_icmpZero(t *testing.T) {
 				Config: testAccComputeV2SecGroup_icmpZero,
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckComputeV2SecGroupExists(t, "openstack_compute_secgroup_v2.test_group_1", &secgroup),
+				),
+			},
+		},
+	})
+}
+
+func TestAccComputeV2SecGroup_lowerCaseCIDR(t *testing.T) {
+	var secgroup secgroups.SecurityGroup
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckComputeV2SecGroupDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccComputeV2SecGroup_lowerCaseCIDR,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckComputeV2SecGroupExists(t, "openstack_compute_secgroup_v2.test_group_1", &secgroup),
+					resource.TestCheckResourceAttr(
+						"openstack_compute_secgroup_v2.test_group_1", "rule.3862435458.cidr", "2001:558:fc00::/39"),
 				),
 			},
 		},
@@ -332,5 +352,17 @@ var testAccComputeV2SecGroup_icmpZero = fmt.Sprintf(`
 			to_port = 0
 			ip_protocol = "icmp"
 			cidr = "0.0.0.0/0"
+		}
+	}`)
+
+var testAccComputeV2SecGroup_lowerCaseCIDR = fmt.Sprintf(`
+	resource "openstack_compute_secgroup_v2" "test_group_1" {
+		name = "test_group_1"
+		description = "first test security group"
+		rule {
+			from_port = 0
+			to_port = 0
+			ip_protocol = "icmp"
+			cidr = "2001:558:FC00::/39"
 		}
 	}`)

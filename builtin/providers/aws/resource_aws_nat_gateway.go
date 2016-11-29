@@ -18,6 +18,9 @@ func resourceAwsNatGateway() *schema.Resource {
 		Create: resourceAwsNatGatewayCreate,
 		Read:   resourceAwsNatGatewayRead,
 		Delete: resourceAwsNatGatewayDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"allocation_id": &schema.Schema{
@@ -98,7 +101,14 @@ func resourceAwsNatGatewayRead(d *schema.ResourceData, meta interface{}) error {
 	if err != nil {
 		return err
 	}
-	if ngRaw == nil || strings.ToLower(state) == "deleted" {
+
+	status := map[string]bool{
+		"deleted":  true,
+		"deleting": true,
+		"failed":   true,
+	}
+
+	if _, ok := status[strings.ToLower(state)]; ngRaw == nil || ok {
 		log.Printf("[INFO] Removing %s from Terraform state as it is not found or in the deleted state.", d.Id())
 		d.SetId("")
 		return nil

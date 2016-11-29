@@ -49,6 +49,71 @@ func TestConfigFieldReader(t *testing.T) {
 	})
 }
 
+// This contains custom table tests for our ConfigFieldReader
+func TestConfigFieldReader_custom(t *testing.T) {
+	schema := map[string]*Schema{
+		"bool": &Schema{
+			Type: TypeBool,
+		},
+	}
+
+	cases := map[string]struct {
+		Addr   []string
+		Result FieldReadResult
+		Config *terraform.ResourceConfig
+		Err    bool
+	}{
+		"basic": {
+			[]string{"bool"},
+			FieldReadResult{
+				Value:  true,
+				Exists: true,
+			},
+			testConfig(t, map[string]interface{}{
+				"bool": true,
+			}),
+			false,
+		},
+
+		"computed": {
+			[]string{"bool"},
+			FieldReadResult{
+				Exists:   true,
+				Computed: true,
+			},
+			testConfigInterpolate(t, map[string]interface{}{
+				"bool": "${var.foo}",
+			}, map[string]ast.Variable{
+				"var.foo": ast.Variable{
+					Value: config.UnknownVariableValue,
+					Type:  ast.TypeString,
+				},
+			}),
+			false,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := &ConfigFieldReader{
+				Schema: schema,
+				Config: tc.Config,
+			}
+			out, err := r.ReadField(tc.Addr)
+			if err != nil != tc.Err {
+				t.Fatalf("%s: err: %s", name, err)
+			}
+			if s, ok := out.Value.(*Set); ok {
+				// If it is a set, convert to a list so its more easily checked.
+				out.Value = s.List()
+			}
+			if !reflect.DeepEqual(tc.Result, out) {
+				t.Fatalf("%s: bad: %#v", name, out)
+			}
+		})
+	}
+}
+
 func TestConfigFieldReader_DefaultHandling(t *testing.T) {
 	schema := map[string]*Schema{
 		"strWithDefault": &Schema{
@@ -183,6 +248,36 @@ func TestConfigFieldReader_ComputedMap(t *testing.T) {
 			}),
 			false,
 		},
+
+		"native map": {
+			[]string{"map"},
+			FieldReadResult{
+				Value: map[string]interface{}{
+					"bar": "baz",
+					"baz": "bar",
+				},
+				Exists:   true,
+				Computed: false,
+			},
+			testConfigInterpolate(t, map[string]interface{}{
+				"map": "${var.foo}",
+			}, map[string]ast.Variable{
+				"var.foo": ast.Variable{
+					Type: ast.TypeMap,
+					Value: map[string]ast.Variable{
+						"bar": ast.Variable{
+							Type:  ast.TypeString,
+							Value: "baz",
+						},
+						"baz": ast.Variable{
+							Type:  ast.TypeString,
+							Value: "bar",
+						},
+					},
+				},
+			}),
+			false,
+		},
 	}
 
 	for name, tc := range cases {
@@ -305,6 +400,7 @@ func testConfigInterpolate(
 	t *testing.T,
 	raw map[string]interface{},
 	vs map[string]ast.Variable) *terraform.ResourceConfig {
+
 	rc, err := config.NewRawConfig(raw)
 	if err != nil {
 		t.Fatalf("err: %s", err)

@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/secgroups"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/rackspace/gophercloud"
-	"github.com/rackspace/gophercloud/openstack/compute/v2/extensions/secgroups"
 )
 
 func resourceComputeSecGroupV2() *schema.Resource {
@@ -19,6 +20,9 @@ func resourceComputeSecGroupV2() *schema.Resource {
 		Read:   resourceComputeSecGroupV2Read,
 		Update: resourceComputeSecGroupV2Update,
 		Delete: resourceComputeSecGroupV2Delete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"region": &schema.Schema{
@@ -66,6 +70,9 @@ func resourceComputeSecGroupV2() *schema.Resource {
 							Type:     schema.TypeString,
 							Optional: true,
 							ForceNew: false,
+							StateFunc: func(v interface{}) string {
+								return strings.ToLower(v.(string))
+							},
 						},
 						"from_group_id": &schema.Schema{
 							Type:     schema.TypeString,
@@ -190,15 +197,11 @@ func resourceComputeSecGroupV2Update(d *schema.ResourceData, meta interface{}) e
 			rule := resourceSecGroupRuleV2(d, r)
 			err := secgroups.DeleteRule(computeClient, rule.ID).ExtractErr()
 			if err != nil {
-				errCode, ok := err.(*gophercloud.UnexpectedResponseCodeError)
-				if !ok {
-					return fmt.Errorf("Error removing rule (%s) from OpenStack security group (%s): %s", rule.ID, d.Id(), err)
-				}
-				if errCode.Actual == 404 {
+				if _, ok := err.(gophercloud.ErrDefault404); ok {
 					continue
-				} else {
-					return fmt.Errorf("Error removing rule (%s) from OpenStack security group (%s)", rule.ID, d.Id())
 				}
+
+				return fmt.Errorf("Error removing rule (%s) from OpenStack security group (%s)", rule.ID, d.Id())
 			} else {
 				log.Printf("[DEBUG] Removed rule (%s) from OpenStack security group (%s): %s", rule.ID, d.Id(), err)
 			}
@@ -355,7 +358,7 @@ func secgroupRuleV2Hash(v interface{}) int {
 	buf.WriteString(fmt.Sprintf("%d-", m["from_port"].(int)))
 	buf.WriteString(fmt.Sprintf("%d-", m["to_port"].(int)))
 	buf.WriteString(fmt.Sprintf("%s-", m["ip_protocol"].(string)))
-	buf.WriteString(fmt.Sprintf("%s-", m["cidr"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", strings.ToLower(m["cidr"].(string))))
 	buf.WriteString(fmt.Sprintf("%s-", m["from_group_id"].(string)))
 	buf.WriteString(fmt.Sprintf("%t-", m["self"].(bool)))
 

@@ -9,6 +9,8 @@ import (
 
 	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/terraform/config"
+	"github.com/hashicorp/terraform/helper/experiment"
 	"github.com/hashicorp/terraform/terraform"
 )
 
@@ -94,6 +96,51 @@ func (c *ApplyCommand) Run(args []string) int {
 		}
 	}
 
+	terraform.SetDebugInfo(DefaultDataDir)
+
+	// Check for the new apply
+	if experiment.Enabled(experiment.X_newApply) && !experiment.Force() {
+		desc := "Experimental new apply graph has been enabled. This may still\n" +
+			"have bugs, and should be used with care. If you'd like to continue,\n" +
+			"you must enter exactly 'yes' as a response."
+		v, err := c.UIInput().Input(&terraform.InputOpts{
+			Id:          "Xnew-apply",
+			Query:       "Experimental feature enabled: new apply graph. Continue?",
+			Description: desc,
+		})
+		if err != nil {
+			c.Ui.Error(fmt.Sprintf("Error asking for confirmation: %s", err))
+			return 1
+		}
+		if v != "yes" {
+			c.Ui.Output("Apply cancelled.")
+			return 1
+		}
+	}
+
+	// Check for the new destroy
+	if experiment.Enabled(experiment.X_newDestroy) && !experiment.Force() {
+		desc := "Experimental new destroy graph has been enabled. This may still\n" +
+			"have bugs, and should be used with care. If you'd like to continue,\n" +
+			"you must enter exactly 'yes' as a response."
+		v, err := c.UIInput().Input(&terraform.InputOpts{
+			Id:          "Xnew-destroy",
+			Query:       "Experimental feature enabled: new destroy graph. Continue?",
+			Description: desc,
+		})
+		if err != nil {
+			c.Ui.Error(fmt.Sprintf("Error asking for confirmation: %s", err))
+			return 1
+		}
+		if v != "yes" {
+			c.Ui.Output("Apply cancelled.")
+			return 1
+		}
+	}
+
+	// This is going to keep track of shadow errors
+	var shadowErr error
+
 	// Build the context based on the arguments given
 	ctx, planned, err := c.Context(contextOpts{
 		Destroy:     c.Destroy,
@@ -147,6 +194,12 @@ func (c *ApplyCommand) Run(args []string) int {
 			c.Ui.Error(fmt.Sprintf("Error configuring: %s", err))
 			return 1
 		}
+
+		// Record any shadow errors for later
+		if err := ctx.ShadowError(); err != nil {
+			shadowErr = multierror.Append(shadowErr, multierror.Prefix(
+				err, "input operation:"))
+		}
 	}
 	if !validateContext(ctx, c.Ui) {
 		return 1
@@ -165,6 +218,12 @@ func (c *ApplyCommand) Run(args []string) int {
 			c.Ui.Error(fmt.Sprintf(
 				"Error creating plan: %s", err))
 			return 1
+		}
+
+		// Record any shadow errors for later
+		if err := ctx.ShadowError(); err != nil {
+			shadowErr = multierror.Append(shadowErr, multierror.Prefix(
+				err, "plan operation:"))
 		}
 	}
 
@@ -187,6 +246,12 @@ func (c *ApplyCommand) Run(args []string) int {
 	go func() {
 		defer close(doneCh)
 		state, applyErr = ctx.Apply()
+
+		// Record any shadow errors for later
+		if err := ctx.ShadowError(); err != nil {
+			shadowErr = multierror.Append(shadowErr, multierror.Prefix(
+				err, "apply operation:"))
+		}
 	}()
 
 	// Wait for the apply to finish or for us to be interrupted so
@@ -231,12 +296,19 @@ func (c *ApplyCommand) Run(args []string) int {
 		return 1
 	}
 
-	c.Ui.Output(c.Colorize().Color(fmt.Sprintf(
-		"[reset][bold][green]\n"+
-			"Apply complete! Resources: %d added, %d changed, %d destroyed.",
-		countHook.Added,
-		countHook.Changed,
-		countHook.Removed)))
+	if c.Destroy {
+		c.Ui.Output(c.Colorize().Color(fmt.Sprintf(
+			"[reset][bold][green]\n"+
+				"Destroy complete! Resources: %d destroyed.",
+			countHook.Removed)))
+	} else {
+		c.Ui.Output(c.Colorize().Color(fmt.Sprintf(
+			"[reset][bold][green]\n"+
+				"Apply complete! Resources: %d added, %d changed, %d destroyed.",
+			countHook.Added,
+			countHook.Changed,
+			countHook.Removed)))
+	}
 
 	if countHook.Added > 0 || countHook.Changed > 0 {
 		c.Ui.Output(c.Colorize().Color(fmt.Sprintf(
@@ -250,10 +322,13 @@ func (c *ApplyCommand) Run(args []string) int {
 	}
 
 	if !c.Destroy {
-		if outputs := outputsAsString(state); outputs != "" {
+		if outputs := outputsAsString(state, terraform.RootModulePath, ctx.Module().Config().Outputs, true); outputs != "" {
 			c.Ui.Output(c.Colorize().Color(outputs))
 		}
 	}
+
+	// If we have an error in the shadow graph, let the user know.
+	c.outputShadowError(shadowErr, applyErr == nil)
 
 	return 0
 }
@@ -376,35 +451,59 @@ Options:
 	return strings.TrimSpace(helpText)
 }
 
-func outputsAsString(state *terraform.State) string {
+func outputsAsString(state *terraform.State, modPath []string, schema []*config.Output, includeHeader bool) string {
 	if state == nil {
 		return ""
 	}
 
-	outputs := state.RootModule().Outputs
+	ms := state.ModuleByPath(modPath)
+	if ms == nil {
+		return ""
+	}
+
+	outputs := ms.Outputs
 	outputBuf := new(bytes.Buffer)
 	if len(outputs) > 0 {
-		outputBuf.WriteString("[reset][bold][green]\nOutputs:\n\n")
+		schemaMap := make(map[string]*config.Output)
+		if schema != nil {
+			for _, s := range schema {
+				schemaMap[s.Name] = s
+			}
+		}
+
+		if includeHeader {
+			outputBuf.WriteString("[reset][bold][green]\nOutputs:\n\n")
+		}
 
 		// Output the outputs in alphabetical order
 		keyLen := 0
-		keys := make([]string, 0, len(outputs))
+		ks := make([]string, 0, len(outputs))
 		for key, _ := range outputs {
-			keys = append(keys, key)
+			ks = append(ks, key)
 			if len(key) > keyLen {
 				keyLen = len(key)
 			}
 		}
-		sort.Strings(keys)
+		sort.Strings(ks)
 
-		for _, k := range keys {
+		for _, k := range ks {
+			schema, ok := schemaMap[k]
+			if ok && schema.Sensitive {
+				outputBuf.WriteString(fmt.Sprintf("%s = <sensitive>\n", k))
+				continue
+			}
+
 			v := outputs[k]
-
-			outputBuf.WriteString(fmt.Sprintf(
-				"  %s%s = %s\n",
-				k,
-				strings.Repeat(" ", keyLen-len(k)),
-				v))
+			switch typedV := v.Value.(type) {
+			case string:
+				outputBuf.WriteString(fmt.Sprintf("%s = %s\n", k, typedV))
+			case []interface{}:
+				outputBuf.WriteString(formatListOutput("", k, typedV))
+				outputBuf.WriteString("\n")
+			case map[string]interface{}:
+				outputBuf.WriteString(formatMapOutput("", k, typedV))
+				outputBuf.WriteString("\n")
+			}
 		}
 	}
 

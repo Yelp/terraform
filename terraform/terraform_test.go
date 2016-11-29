@@ -1,8 +1,11 @@
 package terraform
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,10 +15,33 @@ import (
 	"github.com/hashicorp/go-getter"
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
+	"github.com/hashicorp/terraform/helper/experiment"
+	"github.com/hashicorp/terraform/helper/logging"
 )
 
 // This is the directory where our test fixtures are.
 const fixtureDir = "./test-fixtures"
+
+func TestMain(m *testing.M) {
+	experiment.Flag(flag.CommandLine)
+	flag.Parse()
+
+	if testing.Verbose() {
+		// if we're verbose, use the logging requested by TF_LOG
+		logging.SetOutput()
+	} else {
+		// otherwise silence all logs
+		log.SetOutput(ioutil.Discard)
+	}
+
+	// Make sure shadow operations fail our real tests
+	contextFailOnShadowError = true
+
+	// Always DeepCopy the Diff on every Plan during a test
+	contextTestDeepCopyOnPlan = true
+
+	os.Exit(m.Run())
+}
 
 func tempDir(t *testing.T) string {
 	dir, err := ioutil.TempDir("", "tf")
@@ -30,11 +56,18 @@ func tempDir(t *testing.T) string {
 }
 
 // tempEnv lets you temporarily set an environment variable. It returns
+// a function to defer to reset the old value.
 // the old value that should be set via a defer.
-func tempEnv(t *testing.T, k string, v string) string {
-	old := os.Getenv(k)
+func tempEnv(t *testing.T, k string, v string) func() {
+	old, oldOk := os.LookupEnv(k)
 	os.Setenv(k, v)
-	return old
+	return func() {
+		if !oldOk {
+			os.Unsetenv(k)
+		} else {
+			os.Setenv(k, old)
+		}
+	}
 }
 
 func testConfig(t *testing.T, name string) *config.Config {
@@ -55,6 +88,54 @@ func testModule(t *testing.T, name string) *module.Tree {
 	s := &getter.FolderStorage{StorageDir: tempDir(t)}
 	if err := mod.Load(s, module.GetModeGet); err != nil {
 		t.Fatalf("err: %s", err)
+	}
+
+	return mod
+}
+
+// testModuleInline takes a map of path -> config strings and yields a config
+// structure with those files loaded from disk
+func testModuleInline(t *testing.T, config map[string]string) *module.Tree {
+	cfgPath, err := ioutil.TempDir("", "tf-test")
+	if err != nil {
+		t.Errorf("Error creating temporary directory for config: %s", err)
+	}
+	defer os.RemoveAll(cfgPath)
+
+	for path, configStr := range config {
+		dir := filepath.Dir(path)
+		if dir != "." {
+			err := os.MkdirAll(filepath.Join(cfgPath, dir), os.FileMode(0777))
+			if err != nil {
+				t.Fatalf("Error creating subdir: %s", err)
+			}
+		}
+		// Write the configuration
+		cfgF, err := os.Create(filepath.Join(cfgPath, path))
+		if err != nil {
+			t.Fatalf("Error creating temporary file for config: %s", err)
+		}
+
+		_, err = io.Copy(cfgF, strings.NewReader(configStr))
+		cfgF.Close()
+		if err != nil {
+			t.Fatalf("Error creating temporary file for config: %s", err)
+		}
+	}
+
+	// Parse the configuration
+	mod, err := module.NewTreeModule("", cfgPath)
+	if err != nil {
+		t.Fatalf("Error loading configuration: %s", err)
+	}
+
+	// Load the modules
+	modStorage := &getter.FolderStorage{
+		StorageDir: filepath.Join(cfgPath, ".tfmodules"),
+	}
+	err = mod.Load(modStorage, module.GetModeGet)
+	if err != nil {
+		t.Errorf("Error downloading modules: %s", err)
 	}
 
 	return mod
@@ -170,6 +251,27 @@ aws_instance.foo:
   ID = foo
   num = 2
   type = aws_instance
+`
+
+const testTerraformApplyDataBasicStr = `
+data.null_data_source.testing:
+  ID = yo
+`
+
+const testTerraformApplyRefCountStr = `
+aws_instance.bar:
+  ID = foo
+  foo = 3
+  type = aws_instance
+
+  Dependencies:
+    aws_instance.foo
+aws_instance.foo.0:
+  ID = foo
+aws_instance.foo.1:
+  ID = foo
+aws_instance.foo.2:
+  ID = foo
 `
 
 const testTerraformApplyProviderAliasStr = `
@@ -304,6 +406,20 @@ aws_instance.foo.1:
   type = aws_instance
 `
 
+const testTerraformApplyCountVariableRefStr = `
+aws_instance.bar:
+  ID = foo
+  foo = 2
+  type = aws_instance
+
+  Dependencies:
+    aws_instance.foo
+aws_instance.foo.0:
+  ID = foo
+aws_instance.foo.1:
+  ID = foo
+`
+
 const testTerraformApplyMinimalStr = `
 aws_instance.bar:
   ID = foo
@@ -385,6 +501,14 @@ Outputs:
 foo = bar
 `
 
+const testTerraformApplyOutputOrphanModuleStr = `
+module.child:
+  <no state>
+  Outputs:
+
+  foo = bar
+`
+
 const testTerraformApplyProvisionerStr = `
 aws_instance.bar:
   ID = foo
@@ -398,10 +522,16 @@ aws_instance.foo:
   type = aws_instance
 `
 
+const testTerraformApplyProvisionerModuleStr = `
+<no state>
+module.child:
+  aws_instance.bar:
+    ID = foo
+`
+
 const testTerraformApplyProvisionerFailStr = `
-aws_instance.bar: (1 tainted)
-  ID = <not created>
-  Tainted ID 1 = foo
+aws_instance.bar: (tainted)
+  ID = foo
 aws_instance.foo:
   ID = foo
   num = 2
@@ -409,9 +539,8 @@ aws_instance.foo:
 `
 
 const testTerraformApplyProvisionerFailCreateStr = `
-aws_instance.bar: (1 tainted)
-  ID = <not created>
-  Tainted ID 1 = foo
+aws_instance.bar: (tainted)
+  ID = foo
 `
 
 const testTerraformApplyProvisionerFailCreateNoIdStr = `
@@ -419,10 +548,10 @@ const testTerraformApplyProvisionerFailCreateNoIdStr = `
 `
 
 const testTerraformApplyProvisionerFailCreateBeforeDestroyStr = `
-aws_instance.bar: (1 tainted)
+aws_instance.bar: (1 deposed)
   ID = bar
   require_new = abc
-  Tainted ID 1 = foo
+  Deposed ID 1 = foo (tainted)
 `
 
 const testTerraformApplyProvisionerResourceRefStr = `
@@ -592,7 +721,7 @@ aws_instance.foo:
 
 Outputs:
 
-foo_num = bar,bar,bar
+foo_num = [bar,bar,bar]
 `
 
 const testTerraformApplyOutputMultiStr = `
@@ -658,6 +787,8 @@ aws_instance.bar:
 aws_instance.foo:
   ID = foo
   bar = baz
+  list = Hello,World
+  map = Baz,Foo,Hello
   num = 2
   type = aws_instance
 `
@@ -665,6 +796,8 @@ aws_instance.foo:
 const testTerraformApplyVarsEnvStr = `
 aws_instance.bar:
   ID = foo
+  bar = Hello,World
+  baz = Baz,Foo,Hello
   foo = baz
   type = aws_instance
 `
@@ -1015,7 +1148,6 @@ DIFF:
 DESTROY: aws_instance.foo
 
 module.child:
-  DESTROY MODULE
   DESTROY: aws_instance.foo
 
 STATE:
@@ -1032,10 +1164,8 @@ const testTerraformPlanModuleDestroyCycleStr = `
 DIFF:
 
 module.a_module:
-  DESTROY MODULE
   DESTROY: aws_instance.a
 module.b_module:
-  DESTROY MODULE
   DESTROY: aws_instance.b
 
 STATE:
@@ -1052,7 +1182,6 @@ const testTerraformPlanModuleDestroyMultivarStr = `
 DIFF:
 
 module.child:
-  DESTROY MODULE
   DESTROY: aws_instance.foo.0
   DESTROY: aws_instance.foo.1
 
@@ -1242,12 +1371,26 @@ DESTROY/CREATE: aws_instance.bar
 
 STATE:
 
-aws_instance.bar: (1 tainted)
-  ID = <not created>
-  Tainted ID 1 = baz
+aws_instance.bar: (tainted)
+  ID = baz
 aws_instance.foo:
   ID = bar
   num = 2
+`
+
+const testTerraformPlanTaintIgnoreChangesStr = `
+DIFF:
+
+DESTROY/CREATE: aws_instance.foo
+  type: "" => "aws_instance"
+  vars: "" => "foo"
+
+STATE:
+
+aws_instance.foo: (tainted)
+  ID = foo
+  type = aws_instance
+  vars = foo
 `
 
 const testTerraformPlanMultipleTaintStr = `
@@ -1308,4 +1451,80 @@ STATE:
 aws_instance.foo:
   ID = bar
   ami = ami-abcd1234
+`
+
+const testTerraformPlanIgnoreChangesWildcardStr = `
+DIFF:
+
+
+
+STATE:
+
+aws_instance.foo:
+  ID = bar
+  ami = ami-abcd1234
+  instance_type = t2.micro
+`
+
+const testTerraformPlanComputedValueInMap = `
+DIFF:
+
+CREATE: aws_computed_source.intermediates
+  computed_read_only: "" => "<computed>"
+
+module.test_mod:
+  CREATE: aws_instance.inner2
+    looked_up: "" => "<computed>"
+    type:      "" => "aws_instance"
+
+STATE:
+
+<no state>
+`
+
+const testTerraformPlanModuleVariableFromSplat = `
+DIFF:
+
+module.mod1:
+  CREATE: aws_instance.test.0
+    thing: "" => "doesnt"
+    type:  "" => "aws_instance"
+  CREATE: aws_instance.test.1
+    thing: "" => "doesnt"
+    type:  "" => "aws_instance"
+module.mod2:
+  CREATE: aws_instance.test.0
+    thing: "" => "doesnt"
+    type:  "" => "aws_instance"
+  CREATE: aws_instance.test.1
+    thing: "" => "doesnt"
+    type:  "" => "aws_instance"
+
+STATE:
+
+<no state>`
+
+const testTerraformInputHCL = `
+hcl_instance.hcltest:
+  ID = foo
+  bar.w = z
+  bar.x = y
+  foo.# = 2
+  foo.0 = a
+  foo.1 = b
+  type = hcl_instance
+`
+
+const testTerraformRefreshDataRefDataStr = `
+data.null_data_source.bar:
+  ID = foo
+  bar = yes
+  type = null_data_source
+
+  Dependencies:
+    data.null_data_source.foo
+data.null_data_source.foo:
+  ID = foo
+  foo = yes
+  type = null_data_source
 `

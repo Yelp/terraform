@@ -129,7 +129,7 @@ func (b *BuiltinGraphBuilder) Build(path []string) (*Graph, error) {
 func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 	steps := []GraphTransformer{
 		// Create all our resources from the configuration and state
-		&ConfigTransformer{Module: b.Root},
+		&ConfigTransformerOld{Module: b.Root},
 		&OrphanTransformer{
 			State:  b.State,
 			Module: b.Root,
@@ -171,6 +171,9 @@ func (b *BuiltinGraphBuilder) Steps(path []string) []GraphTransformer {
 			// Optionally reduces the graph to a user-specified list of targets and
 			// their dependencies.
 			&TargetsTransformer{Targets: b.Targets, Destroy: b.Destroy},
+
+			// Create orphan output nodes
+			&OrphanOutputTransformer{Module: b.Root, State: b.State},
 
 			// Prune the providers. This must happen only once because flattened
 			// modules might depend on empty providers.

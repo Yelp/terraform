@@ -103,6 +103,53 @@ func TestDiffEqual(t *testing.T) {
 	}
 }
 
+func TestDiffPrune(t *testing.T) {
+	cases := map[string]struct {
+		D1, D2 *Diff
+	}{
+		"nil": {
+			nil,
+			nil,
+		},
+
+		"empty": {
+			new(Diff),
+			new(Diff),
+		},
+
+		"empty module": {
+			&Diff{
+				Modules: []*ModuleDiff{
+					&ModuleDiff{Path: []string{"root", "foo"}},
+				},
+			},
+			&Diff{},
+		},
+
+		"destroy module": {
+			&Diff{
+				Modules: []*ModuleDiff{
+					&ModuleDiff{Path: []string{"root", "foo"}, Destroy: true},
+				},
+			},
+			&Diff{
+				Modules: []*ModuleDiff{
+					&ModuleDiff{Path: []string{"root", "foo"}, Destroy: true},
+				},
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tc.D1.Prune()
+			if !tc.D1.Equal(tc.D2) {
+				t.Fatalf("bad:\n\n%#v\n\n%#v", tc.D1, tc.D2)
+			}
+		})
+	}
+}
+
 func TestModuleDiff_ChangeType(t *testing.T) {
 	cases := []struct {
 		Diff   *ModuleDiff
@@ -698,6 +745,76 @@ func TestInstanceDiffSame(t *testing.T) {
 			},
 			&InstanceDiff{
 				Attributes: map[string]*ResourceAttrDiff{},
+			},
+			true,
+			"",
+		},
+
+		// Computed can change RequiresNew by removal, and that's okay
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old:         "0",
+						NewComputed: true,
+						RequiresNew: true,
+					},
+				},
+			},
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{},
+			},
+			true,
+			"",
+		},
+
+		// Computed can change Destroy by removal, and that's okay
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old:         "0",
+						NewComputed: true,
+						RequiresNew: true,
+					},
+				},
+
+				Destroy: true,
+			},
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{},
+			},
+			true,
+			"",
+		},
+
+		// Computed can change Destroy by elements
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old:         "0",
+						NewComputed: true,
+						RequiresNew: true,
+					},
+				},
+
+				Destroy: true,
+			},
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old: "1",
+						New: "1",
+					},
+					"foo.12": &ResourceAttrDiff{
+						Old:         "4",
+						New:         "12",
+						RequiresNew: true,
+					},
+				},
+
+				Destroy: true,
 			},
 			true,
 			"",

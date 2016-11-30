@@ -47,7 +47,10 @@ func (n *NodeApplyableResource) EvalTree() EvalNode {
 	// code for this that we've used for a long time.
 	var stateDeps []string
 	{
-		oldN := &graphNodeExpandedResource{Resource: n.Config}
+		oldN := &graphNodeExpandedResource{
+			Resource: n.Config,
+			Index:    addr.Index,
+		}
 		stateDeps = oldN.StateDependencies()
 	}
 
@@ -75,6 +78,11 @@ func (n *NodeApplyableResource) evalTreeDataResource(
 
 	return &EvalSequence{
 		Nodes: []EvalNode{
+			// Build the instance info
+			&EvalInstanceInfo{
+				Info: info,
+			},
+
 			// Get the saved diff for apply
 			&EvalReadDiff{
 				Name: stateId,

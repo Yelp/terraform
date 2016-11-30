@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"testing"
 
@@ -2491,6 +2492,48 @@ func TestSchemaMap_Diff(t *testing.T) {
 
 			Err: false,
 		},
+
+		"Set ForceNew marks count as ForceNew if computed": {
+			Schema: map[string]*Schema{
+				"ports": &Schema{
+					Type:     TypeSet,
+					Required: true,
+					ForceNew: true,
+					Elem:     &Schema{Type: TypeInt},
+					Set: func(a interface{}) int {
+						return a.(int)
+					},
+				},
+			},
+
+			State: &terraform.InstanceState{
+				Attributes: map[string]string{
+					"ports.#": "3",
+					"ports.1": "1",
+					"ports.2": "2",
+					"ports.4": "4",
+				},
+			},
+
+			Config: map[string]interface{}{
+				"ports": []interface{}{"${var.foo}", 2, 1},
+			},
+
+			ConfigVariables: map[string]ast.Variable{
+				"var.foo": interfaceToVariableSwallowError(config.UnknownVariableValue),
+			},
+
+			Diff: &terraform.InstanceDiff{
+				Attributes: map[string]*terraform.ResourceAttrDiff{
+					"ports.#": &terraform.ResourceAttrDiff{
+						Old:         "3",
+						New:         "",
+						NewComputed: true,
+						RequiresNew: true,
+					},
+				},
+			},
+		},
 	}
 
 	for tn, tc := range cases {
@@ -3978,6 +4021,9 @@ func TestSchemaMap_Validate(t *testing.T) {
 		}
 
 		if tc.Errors != nil {
+			sort.Sort(errorSort(es))
+			sort.Sort(errorSort(tc.Errors))
+
 			if !reflect.DeepEqual(es, tc.Errors) {
 				t.Fatalf("%q: errors:\n\nexpected: %q\ngot: %q", tn, tc.Errors, es)
 			}
@@ -4165,4 +4211,13 @@ func TestSchemaSet_ValidateMinItems(t *testing.T) {
 			}
 		}
 	}
+}
+
+// errorSort implements sort.Interface to sort errors by their error message
+type errorSort []error
+
+func (e errorSort) Len() int      { return len(e) }
+func (e errorSort) Swap(i, j int) { e[i], e[j] = e[j], e[i] }
+func (e errorSort) Less(i, j int) bool {
+	return e[i].Error() < e[j].Error()
 }

@@ -286,6 +286,14 @@ aws_instance.foo:
   type = aws_instance
 `
 
+const testTerraformApplyProviderAliasConfigStr = `
+another_instance.bar:
+  ID = foo
+  provider = another.two
+another_instance.foo:
+  ID = foo
+`
+
 const testTerraformApplyEmptyModuleStr = `
 <no state>
 Outputs:
@@ -494,6 +502,18 @@ module.child:
     provider = aws.eu
 `
 
+const testTerraformApplyModuleVarRefExistingStr = `
+aws_instance.foo:
+  ID = foo
+  foo = bar
+
+module.child:
+  aws_instance.foo:
+    ID = foo
+    type = aws_instance
+    value = bar
+`
+
 const testTerraformApplyOutputOrphanStr = `
 <no state>
 Outputs:
@@ -581,6 +601,27 @@ aws_instance.foo.2:
   ID = foo
   foo = number 2
   type = aws_instance
+`
+
+const testTerraformApplyProvisionerMultiSelfRefSingleStr = `
+aws_instance.foo.0:
+  ID = foo
+  foo = number 0
+  type = aws_instance
+aws_instance.foo.1:
+  ID = foo
+  foo = number 1
+  type = aws_instance
+
+  Dependencies:
+    aws_instance.foo.0
+aws_instance.foo.2:
+  ID = foo
+  foo = number 2
+  type = aws_instance
+
+  Dependencies:
+    aws_instance.foo.0
 `
 
 const testTerraformApplyProvisionerDiffStr = `

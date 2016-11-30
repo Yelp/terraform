@@ -54,6 +54,7 @@ func Provider() terraform.ResourceProvider {
 			"azurerm_cdn_endpoint":     resourceArmCdnEndpoint(),
 			"azurerm_cdn_profile":      resourceArmCdnProfile(),
 
+			"azurerm_eventhub":           resourceArmEventHub(),
 			"azurerm_eventhub_namespace": resourceArmEventHubNamespace(),
 
 			"azurerm_lb":                      resourceArmLoadBalancer(),
@@ -84,6 +85,7 @@ func Provider() terraform.ResourceProvider {
 			"azurerm_template_deployment":       resourceArmTemplateDeployment(),
 			"azurerm_traffic_manager_endpoint":  resourceArmTrafficManagerEndpoint(),
 			"azurerm_traffic_manager_profile":   resourceArmTrafficManagerProfile(),
+			"azurerm_virtual_machine_extension": resourceArmVirtualMachineExtensions(),
 			"azurerm_virtual_machine":           resourceArmVirtualMachine(),
 			"azurerm_virtual_machine_scale_set": resourceArmVirtualMachineScaleSet(),
 			"azurerm_virtual_network":           resourceArmVirtualNetwork(),

@@ -18,6 +18,9 @@ func resourceArmRouteTable() *schema.Resource {
 		Read:   resourceArmRouteTableRead,
 		Update: resourceArmRouteTableCreate,
 		Delete: resourceArmRouteTableDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"name": {
@@ -26,12 +29,7 @@ func resourceArmRouteTable() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"location": {
-				Type:      schema.TypeString,
-				Required:  true,
-				ForceNew:  true,
-				StateFunc: azureRMNormalizeLocation,
-			},
+			"location": locationSchema(),
 
 			"resource_group_name": {
 				Type:     schema.TypeString,
@@ -73,7 +71,6 @@ func resourceArmRouteTable() *schema.Resource {
 
 			"subnets": {
 				Type:     schema.TypeSet,
-				Optional: true,
 				Computed: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Set:      schema.HashString,
@@ -102,18 +99,20 @@ func resourceArmRouteTableCreate(d *schema.ResourceData, meta interface{}) error
 	}
 
 	if _, ok := d.GetOk("route"); ok {
-		properties := network.RouteTablePropertiesFormat{}
 		routes, routeErr := expandAzureRmRouteTableRoutes(d)
 		if routeErr != nil {
 			return fmt.Errorf("Error Building list of Route Table Routes: %s", routeErr)
 		}
-		if len(routes) > 0 {
-			routeSet.Properties = &properties
-		}
 
+		if len(routes) > 0 {
+			routeSet.RouteTablePropertiesFormat = &network.RouteTablePropertiesFormat{
+				Routes: &routes,
+			}
+		}
 	}
 
-	_, err := routeTablesClient.CreateOrUpdate(resGroup, name, routeSet, make(chan struct{}))
+	_, error := routeTablesClient.CreateOrUpdate(resGroup, name, routeSet, make(chan struct{}))
+	err := <-error
 	if err != nil {
 		return err
 	}
@@ -150,19 +149,22 @@ func resourceArmRouteTableRead(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("Error making Read request on Azure Route Table %s: %s", name, err)
 	}
 
-	if resp.Properties.Subnets != nil {
-		if len(*resp.Properties.Subnets) > 0 {
-			subnets := make([]string, 0, len(*resp.Properties.Subnets))
-			for _, subnet := range *resp.Properties.Subnets {
-				id := subnet.ID
-				subnets = append(subnets, *id)
-			}
+	d.Set("name", name)
+	d.Set("resource_group_name", resGroup)
+	d.Set("location", resp.Location)
 
-			if err := d.Set("subnets", subnets); err != nil {
-				return err
-			}
+	if resp.RouteTablePropertiesFormat.Routes != nil {
+		d.Set("route", schema.NewSet(resourceArmRouteTableRouteHash, flattenAzureRmRouteTableRoutes(resp.RouteTablePropertiesFormat.Routes)))
+	}
+
+	subnets := []string{}
+	if resp.RouteTablePropertiesFormat.Subnets != nil {
+		for _, subnet := range *resp.RouteTablePropertiesFormat.Subnets {
+			id := subnet.ID
+			subnets = append(subnets, *id)
 		}
 	}
+	d.Set("subnets", subnets)
 
 	flattenAndSetTags(d, resp.Tags)
 
@@ -179,7 +181,8 @@ func resourceArmRouteTableDelete(d *schema.ResourceData, meta interface{}) error
 	resGroup := id.ResourceGroup
 	name := id.Path["routeTables"]
 
-	_, err = routeTablesClient.Delete(resGroup, name, make(chan struct{}))
+	_, error := routeTablesClient.Delete(resGroup, name, make(chan struct{}))
+	err = <-error
 
 	return err
 }
@@ -205,8 +208,8 @@ func expandAzureRmRouteTableRoutes(d *schema.ResourceData) ([]network.Route, err
 
 		name := data["name"].(string)
 		route := network.Route{
-			Name:       &name,
-			Properties: &properties,
+			Name: &name,
+			RoutePropertiesFormat: &properties,
 		}
 
 		routes = append(routes, route)
@@ -215,12 +218,29 @@ func expandAzureRmRouteTableRoutes(d *schema.ResourceData) ([]network.Route, err
 	return routes, nil
 }
 
+func flattenAzureRmRouteTableRoutes(routes *[]network.Route) []interface{} {
+	results := make([]interface{}, 0, len(*routes))
+
+	for _, route := range *routes {
+		r := make(map[string]interface{})
+		r["name"] = *route.Name
+		r["address_prefix"] = *route.RoutePropertiesFormat.AddressPrefix
+		r["next_hop_type"] = string(route.RoutePropertiesFormat.NextHopType)
+		if route.RoutePropertiesFormat.NextHopIPAddress != nil {
+			r["next_hop_in_ip_address"] = *route.RoutePropertiesFormat.NextHopIPAddress
+		}
+		results = append(results, r)
+	}
+
+	return results
+}
+
 func resourceArmRouteTableRouteHash(v interface{}) int {
 	var buf bytes.Buffer
 	m := v.(map[string]interface{})
 	buf.WriteString(fmt.Sprintf("%s-", m["name"].(string)))
 	buf.WriteString(fmt.Sprintf("%s-", m["address_prefix"].(string)))
-	buf.WriteString(fmt.Sprintf("%s-", m["next_hop_type"].(string)))
+	buf.WriteString(fmt.Sprintf("%s-", strings.ToLower(m["next_hop_type"].(string))))
 
 	return hashcode.String(buf.String())
 }

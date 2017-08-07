@@ -127,7 +127,8 @@ func testCheckAzureRMRouteDisappears(name string) resource.TestCheckFunc {
 
 		conn := testAccProvider.Meta().(*ArmClient).routesClient
 
-		_, err := conn.Delete(resourceGroup, rtName, name, make(chan struct{}))
+		_, error := conn.Delete(resourceGroup, rtName, name, make(chan struct{}))
+		err := <-error
 		if err != nil {
 			return fmt.Errorf("Bad: Delete on routesClient: %s", err)
 		}
@@ -155,7 +156,7 @@ func testCheckAzureRMRouteDestroy(s *terraform.State) error {
 		}
 
 		if resp.StatusCode != http.StatusNotFound {
-			return fmt.Errorf("Route still exists:\n%#v", resp.Properties)
+			return fmt.Errorf("Route still exists:\n%#v", resp.RoutePropertiesFormat)
 		}
 	}
 

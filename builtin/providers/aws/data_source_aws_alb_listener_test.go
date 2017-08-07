@@ -74,7 +74,8 @@ func testAccDataSourceAWSALBListenerConfigBasic(albName, targetGroupName string)
 
 resource "aws_alb" "alb_test" {
   name            = "%s"
-  internal        = false
+
+  internal        = true
   security_groups = ["${aws_security_group.alb_test.id}"]
   subnets         = ["${aws_subnet.alb_test.*.id}"]
 
@@ -221,6 +222,15 @@ resource "aws_vpc" "alb_test" {
   }
 }
 
+resource "aws_internet_gateway" "gw" {
+    vpc_id = "${aws_vpc.alb_test.id}"
+
+    tags {
+        TestName = "TestAccAWSALB_basic"
+    }
+}
+
+>>>>>>> v0.8.1-new2
 resource "aws_subnet" "alb_test" {
   count                   = 2
   vpc_id                  = "${aws_vpc.alb_test.id}"

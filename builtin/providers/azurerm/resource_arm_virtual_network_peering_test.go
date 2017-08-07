@@ -154,7 +154,8 @@ func testCheckAzureRMVirtualNetworkPeeringDisappears(name string) resource.TestC
 		// Ensure resource group/virtual network peering combination exists in API
 		conn := testAccProvider.Meta().(*ArmClient).vnetPeeringsClient
 
-		_, err := conn.Delete(resourceGroup, vnetName, name, make(chan struct{}))
+		_, error := conn.Delete(resourceGroup, vnetName, name, make(chan struct{}))
+		err := <-error
 		if err != nil {
 			return fmt.Errorf("Bad: Delete on vnetPeeringsClient: %s", err)
 		}
@@ -181,7 +182,7 @@ func testCheckAzureRMVirtualNetworkPeeringDestroy(s *terraform.State) error {
 		}
 
 		if resp.StatusCode != http.StatusNotFound {
-			return fmt.Errorf("Virtual Network Peering sitll exists:\n%#v", resp.Properties)
+			return fmt.Errorf("Virtual Network Peering sitll exists:\n%#v", resp.VirtualNetworkPeeringPropertiesFormat)
 		}
 	}
 

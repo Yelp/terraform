@@ -25,6 +25,9 @@ const (
 	DiffDestroyCreate
 )
 
+// multiVal matches the index key to a flatmapped set, list or map
+var multiVal = regexp.MustCompile(`\.(#|%)$`)
+
 // Diff trackes the changes that are necessary to apply a configuration
 // to an existing infrastructure.
 type Diff struct {
@@ -291,16 +294,22 @@ func (d *ModuleDiff) String() string {
 		switch {
 		case rdiff.RequiresNew() && (rdiff.GetDestroy() || rdiff.GetDestroyTainted()):
 			crud = "DESTROY/CREATE"
-		case rdiff.GetDestroy():
+		case rdiff.GetDestroy() || rdiff.GetDestroyDeposed():
 			crud = "DESTROY"
 		case rdiff.RequiresNew():
 			crud = "CREATE"
 		}
 
+		extra := ""
+		if !rdiff.GetDestroy() && rdiff.GetDestroyDeposed() {
+			extra = " (deposed only)"
+		}
+
 		buf.WriteString(fmt.Sprintf(
-			"%s: %s\n",
+			"%s: %s%s\n",
 			crud,
-			name))
+			name,
+			extra))
 
 		keyLen := 0
 		rdiffAttrs := rdiff.CopyAttributes()
@@ -356,7 +365,14 @@ type InstanceDiff struct {
 	mu             sync.Mutex
 	Attributes     map[string]*ResourceAttrDiff
 	Destroy        bool
+	DestroyDeposed bool
 	DestroyTainted bool
+
+	// Meta is a simple K/V map that is stored in a diff and persisted to
+	// plans but otherwise is completely ignored by Terraform core. It is
+	// mean to be used for additional data a resource may want to pass through.
+	// The value here must only contain Go primitives and collections.
+	Meta map[string]interface{}
 }
 
 func (d *InstanceDiff) Lock()   { d.mu.Lock() }
@@ -430,7 +446,7 @@ func (d *InstanceDiff) ChangeType() DiffChangeType {
 		return DiffDestroyCreate
 	}
 
-	if d.GetDestroy() {
+	if d.GetDestroy() || d.GetDestroyDeposed() {
 		return DiffDestroy
 	}
 
@@ -449,7 +465,10 @@ func (d *InstanceDiff) Empty() bool {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return !d.Destroy && !d.DestroyTainted && len(d.Attributes) == 0
+	return !d.Destroy &&
+		!d.DestroyTainted &&
+		!d.DestroyDeposed &&
+		len(d.Attributes) == 0
 }
 
 // Equal compares two diffs for exact equality.
@@ -482,6 +501,7 @@ func (d *InstanceDiff) GoString() string {
 		Attributes:     d.Attributes,
 		Destroy:        d.Destroy,
 		DestroyTainted: d.DestroyTainted,
+		DestroyDeposed: d.DestroyDeposed,
 	})
 }
 
@@ -514,6 +534,20 @@ func (d *InstanceDiff) requiresNew() bool {
 	}
 
 	return false
+}
+
+func (d *InstanceDiff) GetDestroyDeposed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	return d.DestroyDeposed
+}
+
+func (d *InstanceDiff) SetDestroyDeposed(b bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.DestroyDeposed = b
 }
 
 // These methods are properly locked, for use outside other InstanceDiff
@@ -613,7 +647,45 @@ func (d *InstanceDiff) Same(d2 *InstanceDiff) (bool, string) {
 	newNew := d2.RequiresNew()
 	if oldNew && !newNew {
 		oldNew = false
-		for _, rd := range d.Attributes {
+
+		// This section builds a list of ignorable attributes for requiresNew
+		// by removing off any elements of collections going to zero elements.
+		// For collections going to zero, they may not exist at all in the
+		// new diff (and hence RequiresNew == false).
+		ignoreAttrs := make(map[string]struct{})
+		for k, diffOld := range d.Attributes {
+			if !strings.HasSuffix(k, ".%") && !strings.HasSuffix(k, ".#") {
+				continue
+			}
+
+			// This case is in here as a protection measure. The bug that this
+			// code originally fixed (GH-11349) didn't have to deal with computed
+			// so I'm not 100% sure what the correct behavior is. Best to leave
+			// the old behavior.
+			if diffOld.NewComputed {
+				continue
+			}
+
+			// We're looking for the case a map goes to exactly 0.
+			if diffOld.New != "0" {
+				continue
+			}
+
+			// Found it! Ignore all of these. The prefix here is stripping
+			// off the "%" so it is just "k."
+			prefix := k[:len(k)-1]
+			for k2, _ := range d.Attributes {
+				if strings.HasPrefix(k2, prefix) {
+					ignoreAttrs[k2] = struct{}{}
+				}
+			}
+		}
+
+		for k, rd := range d.Attributes {
+			if _, ok := ignoreAttrs[k]; ok {
+				continue
+			}
+
 			// If the field is requires new and NOT computed, then what
 			// we have is a diff mismatch for sure. We set that the old
 			// diff does REQUIRE a ForceNew.
@@ -739,7 +811,6 @@ func (d *InstanceDiff) Same(d2 *InstanceDiff) (bool, string) {
 		}
 
 		// search for the suffix of the base of a [computed] map, list or set.
-		multiVal := regexp.MustCompile(`\.(#|~#|%)$`)
 		match := multiVal.FindStringSubmatch(k)
 
 		if diffOld.NewComputed && len(match) == 2 {

@@ -86,14 +86,15 @@ func resourceArmVirtualNetworkPeeringCreate(d *schema.ResourceData, meta interfa
 	resGroup := d.Get("resource_group_name").(string)
 
 	peer := network.VirtualNetworkPeering{
-		Name:       &name,
-		Properties: getVirtualNetworkPeeringProperties(d),
+		Name: &name,
+		VirtualNetworkPeeringPropertiesFormat: getVirtualNetworkPeeringProperties(d),
 	}
 
 	peerMutex.Lock()
 	defer peerMutex.Unlock()
 
-	_, err := client.CreateOrUpdate(resGroup, vnetName, name, peer, make(chan struct{}))
+	_, error := client.CreateOrUpdate(resGroup, vnetName, name, peer, make(chan struct{}))
+	err := <-error
 	if err != nil {
 		return err
 	}
@@ -131,7 +132,7 @@ func resourceArmVirtualNetworkPeeringRead(d *schema.ResourceData, meta interface
 		return fmt.Errorf("Error making Read request on Azure virtual network peering %s: %s", name, err)
 	}
 
-	peer := *resp.Properties
+	peer := *resp.VirtualNetworkPeeringPropertiesFormat
 
 	// update appropriate values
 	d.Set("resource_group_name", resGroup)
@@ -160,7 +161,8 @@ func resourceArmVirtualNetworkPeeringDelete(d *schema.ResourceData, meta interfa
 	peerMutex.Lock()
 	defer peerMutex.Unlock()
 
-	_, err = client.Delete(resGroup, vnetName, name, make(chan struct{}))
+	_, error := client.Delete(resGroup, vnetName, name, make(chan struct{}))
+	err = <-error
 
 	return err
 }

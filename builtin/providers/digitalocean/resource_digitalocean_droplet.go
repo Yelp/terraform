@@ -1,6 +1,7 @@
 package digitalocean
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strconv"
@@ -23,18 +24,18 @@ func resourceDigitalOceanDroplet() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"image": &schema.Schema{
+			"image": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
 
-			"region": &schema.Schema{
+			"region": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
@@ -44,7 +45,7 @@ func resourceDigitalOceanDroplet() *schema.Resource {
 				},
 			},
 
-			"size": &schema.Schema{
+			"size": {
 				Type:     schema.TypeString,
 				Required: true,
 				StateFunc: func(val interface{}) string {
@@ -53,43 +54,53 @@ func resourceDigitalOceanDroplet() *schema.Resource {
 				},
 			},
 
-			"disk": &schema.Schema{
+			"disk": {
 				Type:     schema.TypeInt,
 				Computed: true,
 			},
 
-			"vcpus": &schema.Schema{
+			"vcpus": {
 				Type:     schema.TypeInt,
 				Computed: true,
 			},
 
-			"resize_disk": &schema.Schema{
+			"price_hourly": {
+				Type:     schema.TypeFloat,
+				Computed: true,
+			},
+
+			"price_monthly": {
+				Type:     schema.TypeFloat,
+				Computed: true,
+			},
+
+			"resize_disk": {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Default:  true,
 			},
 
-			"status": &schema.Schema{
+			"status": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 
-			"locked": &schema.Schema{
+			"locked": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 
-			"backups": &schema.Schema{
+			"backups": {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
 
-			"ipv6": &schema.Schema{
+			"ipv6": {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
 
-			"ipv6_address": &schema.Schema{
+			"ipv6_address": {
 				Type:     schema.TypeString,
 				Computed: true,
 				StateFunc: func(val interface{}) string {
@@ -97,45 +108,45 @@ func resourceDigitalOceanDroplet() *schema.Resource {
 				},
 			},
 
-			"ipv6_address_private": &schema.Schema{
+			"ipv6_address_private": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 
-			"private_networking": &schema.Schema{
+			"private_networking": {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
 
-			"ipv4_address": &schema.Schema{
+			"ipv4_address": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 
-			"ipv4_address_private": &schema.Schema{
+			"ipv4_address_private": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
 
-			"ssh_keys": &schema.Schema{
+			"ssh_keys": {
 				Type:     schema.TypeList,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 
-			"tags": &schema.Schema{
+			"tags": {
 				Type:     schema.TypeList,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 
-			"user_data": &schema.Schema{
+			"user_data": {
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},
 
-			"volume_ids": &schema.Schema{
+			"volume_ids": {
 				Type:     schema.TypeList,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
@@ -203,7 +214,7 @@ func resourceDigitalOceanDropletCreate(d *schema.ResourceData, meta interface{})
 
 	log.Printf("[DEBUG] Droplet create configuration: %#v", opts)
 
-	droplet, _, err := client.Droplets.Create(opts)
+	droplet, _, err := client.Droplets.Create(context.Background(), opts)
 
 	if err != nil {
 		return fmt.Errorf("Error creating droplet: %s", err)
@@ -238,7 +249,7 @@ func resourceDigitalOceanDropletRead(d *schema.ResourceData, meta interface{}) e
 	}
 
 	// Retrieve the droplet properties for updating the state
-	droplet, resp, err := client.Droplets.Get(id)
+	droplet, resp, err := client.Droplets.Get(context.Background(), id)
 	if err != nil {
 		// check if the droplet no longer exists.
 		if resp != nil && resp.StatusCode == 404 {
@@ -250,15 +261,20 @@ func resourceDigitalOceanDropletRead(d *schema.ResourceData, meta interface{}) e
 		return fmt.Errorf("Error retrieving droplet: %s", err)
 	}
 
-	if droplet.Image.Slug != "" {
-		d.Set("image", droplet.Image.Slug)
-	} else {
+	_, err = strconv.Atoi(d.Get("image").(string))
+	if err == nil || droplet.Image.Slug == "" {
+		// The image field is provided as an ID (number), or
+		// the image bash no slug. In both cases we store it as an ID.
 		d.Set("image", droplet.Image.ID)
+	} else {
+		d.Set("image", droplet.Image.Slug)
 	}
 
 	d.Set("name", droplet.Name)
 	d.Set("region", droplet.Region.Slug)
 	d.Set("size", droplet.Size.Slug)
+	d.Set("price_hourly", droplet.Size.PriceHourly)
+	d.Set("price_monthly", droplet.Size.PriceMonthly)
 	d.Set("disk", droplet.Disk)
 	d.Set("vcpus", droplet.Vcpus)
 	d.Set("status", droplet.Status)
@@ -322,10 +338,11 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 		return fmt.Errorf("invalid droplet id: %v", err)
 	}
 
-	if d.HasChange("size") {
-		oldSize, newSize := d.GetChange("size")
+	resize_disk := d.Get("resize_disk").(bool)
+	if d.HasChange("size") || d.HasChange("resize_disk") && resize_disk {
+		newSize := d.Get("size")
 
-		_, _, err = client.DropletActions.PowerOff(id)
+		_, _, err = client.DropletActions.PowerOff(context.Background(), id)
 		if err != nil && !strings.Contains(err.Error(), "Droplet is already powered off") {
 			return fmt.Errorf(
 				"Error powering off droplet (%s): %s", d.Id(), err)
@@ -339,13 +356,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 		}
 
 		// Resize the droplet
-		resize_disk := d.Get("resize_disk")
-		switch {
-		case resize_disk == true:
-			_, _, err = client.DropletActions.Resize(id, newSize.(string), true)
-		case resize_disk == false:
-			_, _, err = client.DropletActions.Resize(id, newSize.(string), false)
-		}
+		action, _, err := client.DropletActions.Resize(context.Background(), id, newSize.(string), resize_disk)
 		if err != nil {
 			newErr := powerOnAndWait(d, meta)
 			if newErr != nil {
@@ -356,11 +367,8 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 				"Error resizing droplet (%s): %s", d.Id(), err)
 		}
 
-		// Wait for the size to change
-		_, err = WaitForDropletAttribute(
-			d, newSize.(string), []string{"", oldSize.(string)}, "size", meta)
-
-		if err != nil {
+		// Wait for the resize action to complete.
+		if err := waitForAction(client, action); err != nil {
 			newErr := powerOnAndWait(d, meta)
 			if newErr != nil {
 				return fmt.Errorf(
@@ -370,7 +378,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 				"Error waiting for resize droplet (%s) to finish: %s", d.Id(), err)
 		}
 
-		_, _, err = client.DropletActions.PowerOn(id)
+		_, _, err = client.DropletActions.PowerOn(context.Background(), id)
 
 		if err != nil {
 			return fmt.Errorf(
@@ -388,7 +396,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 		oldName, newName := d.GetChange("name")
 
 		// Rename the droplet
-		_, _, err = client.DropletActions.Rename(id, newName.(string))
+		_, _, err = client.DropletActions.Rename(context.Background(), id, newName.(string))
 
 		if err != nil {
 			return fmt.Errorf(
@@ -408,7 +416,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 	// As there is no way to disable private networking,
 	// we only check if it needs to be enabled
 	if d.HasChange("private_networking") && d.Get("private_networking").(bool) {
-		_, _, err = client.DropletActions.EnablePrivateNetworking(id)
+		_, _, err = client.DropletActions.EnablePrivateNetworking(context.Background(), id)
 
 		if err != nil {
 			return fmt.Errorf(
@@ -425,7 +433,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 
 	// As there is no way to disable IPv6, we only check if it needs to be enabled
 	if d.HasChange("ipv6") && d.Get("ipv6").(bool) {
-		_, _, err = client.DropletActions.EnableIPv6(id)
+		_, _, err = client.DropletActions.EnableIPv6(context.Background(), id)
 
 		if err != nil {
 			return fmt.Errorf(
@@ -471,7 +479,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 		oldIDSet := newSet(oldIDs.([]interface{}))
 		newIDSet := newSet(newIDs.([]interface{}))
 		for volumeID := range leftDiff(newIDSet, oldIDSet) {
-			action, _, err := client.StorageActions.Attach(volumeID, id)
+			action, _, err := client.StorageActions.Attach(context.Background(), volumeID, id)
 			if err != nil {
 				return fmt.Errorf("Error attaching volume %q to droplet (%s): %s", volumeID, d.Id(), err)
 			}
@@ -481,7 +489,7 @@ func resourceDigitalOceanDropletUpdate(d *schema.ResourceData, meta interface{})
 			}
 		}
 		for volumeID := range leftDiff(oldIDSet, newIDSet) {
-			action, _, err := client.StorageActions.Detach(volumeID)
+			action, _, err := client.StorageActions.DetachByDropletID(context.Background(), volumeID, id)
 			if err != nil {
 				return fmt.Errorf("Error detaching volume %q from droplet (%s): %s", volumeID, d.Id(), err)
 			}
@@ -514,7 +522,7 @@ func resourceDigitalOceanDropletDelete(d *schema.ResourceData, meta interface{})
 	log.Printf("[INFO] Deleting droplet: %s", d.Id())
 
 	// Destroy the droplet
-	_, err = client.Droplets.Delete(id)
+	_, err = client.Droplets.Delete(context.Background(), id)
 
 	// Handle remotely destroyed droplets
 	if err != nil && strings.Contains(err.Error(), "404 Not Found") {
@@ -580,7 +588,7 @@ func newDropletStateRefreshFunc(
 		// See if we can access our attribute
 		if attr, ok := d.GetOk(attribute); ok {
 			// Retrieve the droplet properties
-			droplet, _, err := client.Droplets.Get(id)
+			droplet, _, err := client.Droplets.Get(context.Background(), id)
 			if err != nil {
 				return nil, "", fmt.Errorf("Error retrieving droplet: %s", err)
 			}
@@ -600,7 +608,7 @@ func powerOnAndWait(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	client := meta.(*godo.Client)
-	_, _, err = client.DropletActions.PowerOn(id)
+	_, _, err = client.DropletActions.PowerOn(context.Background(), id)
 	if err != nil {
 		return err
 	}

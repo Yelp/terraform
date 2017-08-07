@@ -3,6 +3,7 @@ package azurerm
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/arm/network"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -14,6 +15,9 @@ func resourceArmRoute() *schema.Resource {
 		Read:   resourceArmRouteRead,
 		Update: resourceArmRouteCreate,
 		Delete: resourceArmRouteDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"name": {
@@ -43,6 +47,9 @@ func resourceArmRoute() *schema.Resource {
 				Type:         schema.TypeString,
 				Required:     true,
 				ValidateFunc: validateRouteTableNextHopType,
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					return strings.ToLower(old) == strings.ToLower(new)
+				},
 			},
 
 			"next_hop_in_ip_address": {
@@ -79,11 +86,12 @@ func resourceArmRouteCreate(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	route := network.Route{
-		Name:       &name,
-		Properties: &properties,
+		Name: &name,
+		RoutePropertiesFormat: &properties,
 	}
 
-	_, err := routesClient.CreateOrUpdate(resGroup, rtName, name, route, make(chan struct{}))
+	_, error := routesClient.CreateOrUpdate(resGroup, rtName, name, route, make(chan struct{}))
+	err := <-error
 	if err != nil {
 		return err
 	}
@@ -120,6 +128,16 @@ func resourceArmRouteRead(d *schema.ResourceData, meta interface{}) error {
 		return fmt.Errorf("Error making Read request on Azure Route %s: %s", routeName, err)
 	}
 
+	d.Set("name", routeName)
+	d.Set("resource_group_name", resGroup)
+	d.Set("route_table_name", rtName)
+	d.Set("address_prefix", resp.RoutePropertiesFormat.AddressPrefix)
+	d.Set("next_hop_type", string(resp.RoutePropertiesFormat.NextHopType))
+
+	if resp.RoutePropertiesFormat.NextHopIPAddress != nil {
+		d.Set("next_hop_in_ip_address", resp.RoutePropertiesFormat.NextHopIPAddress)
+	}
+
 	return nil
 }
 
@@ -138,7 +156,8 @@ func resourceArmRouteDelete(d *schema.ResourceData, meta interface{}) error {
 	armMutexKV.Lock(rtName)
 	defer armMutexKV.Unlock(rtName)
 
-	_, err = routesClient.Delete(resGroup, rtName, routeName, make(chan struct{}))
+	_, error := routesClient.Delete(resGroup, rtName, routeName, make(chan struct{}))
+	err = <-error
 
 	return err
 }

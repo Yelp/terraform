@@ -11,7 +11,6 @@ import (
 	"github.com/Azure/azure-sdk-for-go/arm/storage"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/hashicorp/terraform/helper/signalwrapper"
 	"github.com/hashicorp/terraform/helper/validation"
 )
 
@@ -46,12 +45,7 @@ func resourceArmStorageAccount() *schema.Resource {
 				DiffSuppressFunc: resourceAzurermResourceGroupNameDiffSuppress,
 			},
 
-			"location": {
-				Type:      schema.TypeString,
-				Required:  true,
-				ForceNew:  true,
-				StateFunc: azureRMNormalizeLocation,
-			},
+			"location": locationSchema(),
 
 			"account_kind": {
 				Type:     schema.TypeString,
@@ -65,9 +59,10 @@ func resourceArmStorageAccount() *schema.Resource {
 			},
 
 			"account_type": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ValidateFunc: validateArmStorageAccountType,
+				Type:             schema.TypeString,
+				Required:         true,
+				ValidateFunc:     validateArmStorageAccountType,
+				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 			},
 
 			// Only valid for BlobStorage accounts, defaults to "Hot" in create function
@@ -169,7 +164,7 @@ func resourceArmStorageAccountCreate(d *schema.ResourceData, meta interface{}) e
 		Sku:      &sku,
 		Tags:     expandTags(tags),
 		Kind:     storage.Kind(accountKind),
-		Properties: &storage.AccountPropertiesCreateParameters{
+		AccountPropertiesCreateParameters: &storage.AccountPropertiesCreateParameters{
 			Encryption: &storage.Encryption{
 				Services: &storage.EncryptionServices{
 					Blob: &storage.EncryptionService{
@@ -189,27 +184,12 @@ func resourceArmStorageAccountCreate(d *schema.ResourceData, meta interface{}) e
 			accessTier = blobStorageAccountDefaultAccessTier
 		}
 
-		opts.Properties.AccessTier = storage.AccessTier(accessTier.(string))
+		opts.AccountPropertiesCreateParameters.AccessTier = storage.AccessTier(accessTier.(string))
 	}
 
-	// Create the storage account. We wrap this so that it is cancellable
-	// with a Ctrl-C since this can take a LONG time.
-	wrap := signalwrapper.Run(func(cancelCh <-chan struct{}) error {
-		_, err := storageClient.Create(resourceGroupName, storageAccountName, opts, cancelCh)
-		return err
-	})
-
-	// Check the result of the wrapped function.
-	var createErr error
-	select {
-	case <-time.After(1 * time.Hour):
-		// An hour is way above the expected P99 for this API call so
-		// we premature cancel and error here.
-		createErr = wrap.Cancel()
-	case createErr = <-wrap.ErrCh:
-		// Successfully ran (but perhaps not successfully completed)
-		// the function.
-	}
+	// Create
+	_, createError := storageClient.Create(resourceGroupName, storageAccountName, opts, make(chan struct{}))
+	createErr := <-createError
 
 	// The only way to get the ID back apparently is to read the resource again
 	read, err := storageClient.GetProperties(resourceGroupName, storageAccountName)
@@ -290,7 +270,7 @@ func resourceArmStorageAccountUpdate(d *schema.ResourceData, meta interface{}) e
 		accessTier := d.Get("access_tier").(string)
 
 		opts := storage.AccountUpdateParameters{
-			Properties: &storage.AccountPropertiesUpdateParameters{
+			AccountPropertiesUpdateParameters: &storage.AccountPropertiesUpdateParameters{
 				AccessTier: storage.AccessTier(accessTier),
 			},
 		}
@@ -320,7 +300,7 @@ func resourceArmStorageAccountUpdate(d *schema.ResourceData, meta interface{}) e
 		enableBlobEncryption := d.Get("enable_blob_encryption").(bool)
 
 		opts := storage.AccountUpdateParameters{
-			Properties: &storage.AccountPropertiesUpdateParameters{
+			AccountPropertiesUpdateParameters: &storage.AccountPropertiesUpdateParameters{
 				Encryption: &storage.Encryption{
 					Services: &storage.EncryptionServices{
 						Blob: &storage.EncryptionService{
@@ -374,41 +354,41 @@ func resourceArmStorageAccountRead(d *schema.ResourceData, meta interface{}) err
 	d.Set("location", resp.Location)
 	d.Set("account_kind", resp.Kind)
 	d.Set("account_type", resp.Sku.Name)
-	d.Set("primary_location", resp.Properties.PrimaryLocation)
-	d.Set("secondary_location", resp.Properties.SecondaryLocation)
+	d.Set("primary_location", resp.AccountProperties.PrimaryLocation)
+	d.Set("secondary_location", resp.AccountProperties.SecondaryLocation)
 
-	if resp.Properties.AccessTier != "" {
-		d.Set("access_tier", resp.Properties.AccessTier)
+	if resp.AccountProperties.AccessTier != "" {
+		d.Set("access_tier", resp.AccountProperties.AccessTier)
 	}
 
-	if resp.Properties.PrimaryEndpoints != nil {
-		d.Set("primary_blob_endpoint", resp.Properties.PrimaryEndpoints.Blob)
-		d.Set("primary_queue_endpoint", resp.Properties.PrimaryEndpoints.Queue)
-		d.Set("primary_table_endpoint", resp.Properties.PrimaryEndpoints.Table)
-		d.Set("primary_file_endpoint", resp.Properties.PrimaryEndpoints.File)
+	if resp.AccountProperties.PrimaryEndpoints != nil {
+		d.Set("primary_blob_endpoint", resp.AccountProperties.PrimaryEndpoints.Blob)
+		d.Set("primary_queue_endpoint", resp.AccountProperties.PrimaryEndpoints.Queue)
+		d.Set("primary_table_endpoint", resp.AccountProperties.PrimaryEndpoints.Table)
+		d.Set("primary_file_endpoint", resp.AccountProperties.PrimaryEndpoints.File)
 	}
 
-	if resp.Properties.SecondaryEndpoints != nil {
-		if resp.Properties.SecondaryEndpoints.Blob != nil {
-			d.Set("secondary_blob_endpoint", resp.Properties.SecondaryEndpoints.Blob)
+	if resp.AccountProperties.SecondaryEndpoints != nil {
+		if resp.AccountProperties.SecondaryEndpoints.Blob != nil {
+			d.Set("secondary_blob_endpoint", resp.AccountProperties.SecondaryEndpoints.Blob)
 		} else {
 			d.Set("secondary_blob_endpoint", "")
 		}
-		if resp.Properties.SecondaryEndpoints.Queue != nil {
-			d.Set("secondary_queue_endpoint", resp.Properties.SecondaryEndpoints.Queue)
+		if resp.AccountProperties.SecondaryEndpoints.Queue != nil {
+			d.Set("secondary_queue_endpoint", resp.AccountProperties.SecondaryEndpoints.Queue)
 		} else {
 			d.Set("secondary_queue_endpoint", "")
 		}
-		if resp.Properties.SecondaryEndpoints.Table != nil {
-			d.Set("secondary_table_endpoint", resp.Properties.SecondaryEndpoints.Table)
+		if resp.AccountProperties.SecondaryEndpoints.Table != nil {
+			d.Set("secondary_table_endpoint", resp.AccountProperties.SecondaryEndpoints.Table)
 		} else {
 			d.Set("secondary_table_endpoint", "")
 		}
 	}
 
-	if resp.Properties.Encryption != nil {
-		if resp.Properties.Encryption.Services.Blob != nil {
-			d.Set("enable_blob_encryption", resp.Properties.Encryption.Services.Blob.Enabled)
+	if resp.AccountProperties.Encryption != nil {
+		if resp.AccountProperties.Encryption.Services.Blob != nil {
+			d.Set("enable_blob_encryption", resp.AccountProperties.Encryption.Services.Blob.Enabled)
 		}
 	}
 
@@ -470,6 +450,6 @@ func storageAccountStateRefreshFunc(client *ArmClient, resourceGroupName string,
 			return nil, "", fmt.Errorf("Error issuing read request in storageAccountStateRefreshFunc to Azure ARM for Storage Account '%s' (RG: '%s'): %s", storageAccountName, resourceGroupName, err)
 		}
 
-		return res, string(res.Properties.ProvisioningState), nil
+		return res, string(res.AccountProperties.ProvisioningState), nil
 	}
 }

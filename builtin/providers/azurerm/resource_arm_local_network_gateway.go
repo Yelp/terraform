@@ -25,12 +25,7 @@ func resourceArmLocalNetworkGateway() *schema.Resource {
 				ForceNew: true,
 			},
 
-			"location": {
-				Type:      schema.TypeString,
-				Optional:  true,
-				ForceNew:  true,
-				StateFunc: azureRMNormalizeLocation,
-			},
+			"location": locationSchema(),
 
 			"resource_group_name": {
 				Type:     schema.TypeString,
@@ -71,7 +66,7 @@ func resourceArmLocalNetworkGatewayCreate(d *schema.ResourceData, meta interface
 	gateway := network.LocalNetworkGateway{
 		Name:     &name,
 		Location: &location,
-		Properties: &network.LocalNetworkGatewayPropertiesFormat{
+		LocalNetworkGatewayPropertiesFormat: &network.LocalNetworkGatewayPropertiesFormat{
 			LocalNetworkAddressSpace: &network.AddressSpace{
 				AddressPrefixes: &prefixes,
 			},
@@ -79,7 +74,8 @@ func resourceArmLocalNetworkGatewayCreate(d *schema.ResourceData, meta interface
 		},
 	}
 
-	_, err := lnetClient.CreateOrUpdate(resGroup, name, gateway, make(chan struct{}))
+	_, error := lnetClient.CreateOrUpdate(resGroup, name, gateway, make(chan struct{}))
+	err := <-error
 	if err != nil {
 		return fmt.Errorf("Error creating Azure ARM Local Network Gateway '%s': %s", name, err)
 	}
@@ -106,6 +102,9 @@ func resourceArmLocalNetworkGatewayRead(d *schema.ResourceData, meta interface{}
 		return err
 	}
 	name := id.Path["localNetworkGateways"]
+	if name == "" {
+		return fmt.Errorf("Cannot find 'localNetworkGateways' in '%s', make sure it is specified in the ID parameter", d.Id())
+	}
 	resGroup := id.ResourceGroup
 
 	resp, err := lnetClient.Get(resGroup, name)
@@ -120,10 +119,10 @@ func resourceArmLocalNetworkGatewayRead(d *schema.ResourceData, meta interface{}
 	d.Set("resource_group_name", resGroup)
 	d.Set("name", resp.Name)
 	d.Set("location", resp.Location)
-	d.Set("gateway_address", resp.Properties.GatewayIPAddress)
+	d.Set("gateway_address", resp.LocalNetworkGatewayPropertiesFormat.GatewayIPAddress)
 
 	prefs := []string{}
-	if ps := *resp.Properties.LocalNetworkAddressSpace.AddressPrefixes; ps != nil {
+	if ps := *resp.LocalNetworkGatewayPropertiesFormat.LocalNetworkAddressSpace.AddressPrefixes; ps != nil {
 		prefs = ps
 	}
 	d.Set("address_space", prefs)
@@ -142,7 +141,14 @@ func resourceArmLocalNetworkGatewayDelete(d *schema.ResourceData, meta interface
 	name := id.Path["localNetworkGateways"]
 	resGroup := id.ResourceGroup
 
-	_, err = lnetClient.Delete(resGroup, name, make(chan struct{}))
+	deleteResp, error := lnetClient.Delete(resGroup, name, make(chan struct{}))
+	resp := <-deleteResp
+	err = <-error
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
 	if err != nil {
 		return fmt.Errorf("Error issuing Azure ARM delete request of local network gateway '%s': %s", name, err)
 	}

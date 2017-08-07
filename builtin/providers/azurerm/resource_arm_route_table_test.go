@@ -215,7 +215,8 @@ func testCheckAzureRMRouteTableDisappears(name string) resource.TestCheckFunc {
 
 		conn := testAccProvider.Meta().(*ArmClient).routeTablesClient
 
-		_, err := conn.Delete(resourceGroup, name, make(chan struct{}))
+		_, error := conn.Delete(resourceGroup, name, make(chan struct{}))
+		err := <-error
 		if err != nil {
 			return fmt.Errorf("Bad: Delete on routeTablesClient: %s", err)
 		}
@@ -242,7 +243,7 @@ func testCheckAzureRMRouteTableDestroy(s *terraform.State) error {
 		}
 
 		if resp.StatusCode != http.StatusNotFound {
-			return fmt.Errorf("Route Table still exists:\n%#v", resp.Properties)
+			return fmt.Errorf("Route Table still exists:\n%#v", resp.RouteTablePropertiesFormat)
 		}
 	}
 
@@ -262,8 +263,8 @@ resource "azurerm_route_table" "test" {
 
     route {
     	name = "route1"
-    	address_prefix = "*"
-    	next_hop_type = "internet"
+		address_prefix = "10.1.0.0/16"
+		next_hop_type = "vnetlocal"
     }
 }
 `
@@ -281,14 +282,14 @@ resource "azurerm_route_table" "test" {
 
     route {
     	name = "route1"
-    	address_prefix = "*"
-    	next_hop_type = "internet"
+		address_prefix = "10.1.0.0/16"
+		next_hop_type = "vnetlocal"
     }
 
     route {
     	name = "route2"
-    	address_prefix = "*"
-    	next_hop_type = "virtualappliance"
+		address_prefix = "10.2.0.0/16"
+		next_hop_type = "vnetlocal"
     }
 }
 `
@@ -306,8 +307,8 @@ resource "azurerm_route_table" "test" {
 
     route {
     	name = "route1"
-    	address_prefix = "*"
-    	next_hop_type = "internet"
+    	address_prefix = "10.1.0.0/16"
+    	next_hop_type = "vnetlocal"
     }
 
     tags {
@@ -330,8 +331,8 @@ resource "azurerm_route_table" "test" {
 
     route {
     	name = "route1"
-    	address_prefix = "*"
-    	next_hop_type = "internet"
+    	address_prefix = "10.1.0.0/16"
+    	next_hop_type = "vnetlocal"
     }
 
     tags {

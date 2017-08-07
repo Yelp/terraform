@@ -1,6 +1,7 @@
 package terraform
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -991,18 +992,159 @@ func TestInstanceDiffSame(t *testing.T) {
 			true,
 			"",
 		},
+
+		// Innner computed set should allow outer change in key
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.~1.outer_val": &ResourceAttrDiff{
+						Old: "",
+						New: "foo",
+					},
+					"foo.~1.inner.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.~1.inner.~2.value": &ResourceAttrDiff{
+						Old:         "",
+						New:         "${var.bar}",
+						NewComputed: true,
+					},
+				},
+			},
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.12.outer_val": &ResourceAttrDiff{
+						Old: "",
+						New: "foo",
+					},
+					"foo.12.inner.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.12.inner.42.value": &ResourceAttrDiff{
+						Old: "",
+						New: "baz",
+					},
+				},
+			},
+			true,
+			"",
+		},
+
+		// Innner computed list should allow outer change in key
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.~1.outer_val": &ResourceAttrDiff{
+						Old: "",
+						New: "foo",
+					},
+					"foo.~1.inner.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.~1.inner.0.value": &ResourceAttrDiff{
+						Old:         "",
+						New:         "${var.bar}",
+						NewComputed: true,
+					},
+				},
+			},
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.12.outer_val": &ResourceAttrDiff{
+						Old: "",
+						New: "foo",
+					},
+					"foo.12.inner.#": &ResourceAttrDiff{
+						Old: "0",
+						New: "1",
+					},
+					"foo.12.inner.0.value": &ResourceAttrDiff{
+						Old: "",
+						New: "baz",
+					},
+				},
+			},
+			true,
+			"",
+		},
+
+		// When removing all collection items, the diff is allowed to contain
+		// nothing when re-creating the resource. This should be the "Same"
+		// since we said we were going from 1 to 0.
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.%": &ResourceAttrDiff{
+						Old:         "1",
+						New:         "0",
+						RequiresNew: true,
+					},
+					"foo.bar": &ResourceAttrDiff{
+						Old:         "baz",
+						New:         "",
+						NewRemoved:  true,
+						RequiresNew: true,
+					},
+				},
+			},
+			&InstanceDiff{},
+			true,
+			"",
+		},
+
+		{
+			&InstanceDiff{
+				Attributes: map[string]*ResourceAttrDiff{
+					"foo.#": &ResourceAttrDiff{
+						Old:         "1",
+						New:         "0",
+						RequiresNew: true,
+					},
+					"foo.0": &ResourceAttrDiff{
+						Old:         "baz",
+						New:         "",
+						NewRemoved:  true,
+						RequiresNew: true,
+					},
+				},
+			},
+			&InstanceDiff{},
+			true,
+			"",
+		},
 	}
 
 	for i, tc := range cases {
-		same, reason := tc.One.Same(tc.Two)
-		if same != tc.Same {
-			t.Fatalf("%d: expected same: %t, got %t (%s)\n\n one: %#v\n\ntwo: %#v",
-				i, tc.Same, same, reason, tc.One, tc.Two)
-		}
-		if reason != tc.Reason {
-			t.Fatalf(
-				"%d: bad reason\n\nexpected: %#v\n\ngot: %#v", i, tc.Reason, reason)
-		}
+		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+			same, reason := tc.One.Same(tc.Two)
+			if same != tc.Same {
+				t.Fatalf("%d: expected same: %t, got %t (%s)\n\n one: %#v\n\ntwo: %#v",
+					i, tc.Same, same, reason, tc.One, tc.Two)
+			}
+			if reason != tc.Reason {
+				t.Fatalf(
+					"%d: bad reason\n\nexpected: %#v\n\ngot: %#v", i, tc.Reason, reason)
+			}
+		})
 	}
 }
 

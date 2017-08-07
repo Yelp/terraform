@@ -102,6 +102,9 @@ func (r *ResourceAddress) stateId() string {
 	default:
 		panic(fmt.Errorf("unknown resource mode: %s", r.Mode))
 	}
+	if r.Index >= 0 {
+		result += fmt.Sprintf(".%d", r.Index)
+	}
 
 	return result
 }
@@ -282,14 +285,17 @@ func tokenizeResourceAddress(s string) (map[string]string, error) {
 		// "1" (optional, omission implies: "0")
 		`(?:\[(?P<index>\d+)\])?` +
 		`\z`)
+
 	groupNames := re.SubexpNames()
 	rawMatches := re.FindAllStringSubmatch(s, -1)
 	if len(rawMatches) != 1 {
 		return nil, fmt.Errorf("Problem parsing address: %q", s)
 	}
+
 	matches := make(map[string]string)
 	for i, m := range rawMatches[0] {
 		matches[groupNames[i]] = m
 	}
+
 	return matches, nil
 }
